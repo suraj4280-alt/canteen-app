@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'app_colors.dart';
-import 'auth_service.dart';
+import 'services/api_service.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -27,18 +27,20 @@ class _LoginScreenState extends State<LoginScreen> {
 
     setState(() => _isLoading = true);
 
-    final error = await AuthService.login(identifier, password);
-
-    setState(() => _isLoading = false);
-
-    if (!mounted) return;
-
-    if (error != null) {
+    try {
+      await ApiService.login(identifier, password);
+      
+      setState(() => _isLoading = false);
+      if (!mounted) return;
+      
+      Navigator.pushReplacementNamed(context, '/home');
+    } catch (e) {
+      setState(() => _isLoading = false);
+      if (!mounted) return;
+      
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(error)));
-    } else {
-      Navigator.pushReplacementNamed(context, '/home');
+      ).showSnackBar(SnackBar(content: Text(e.toString().replaceAll('Exception: ', ''))));
     }
   }
 

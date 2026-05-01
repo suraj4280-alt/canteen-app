@@ -6,6 +6,7 @@ import 'skip_meal_screen.dart';
 import 'meal_pass_screen.dart';
 import 'meal_state.dart';
 import 'auth_service.dart';
+import 'services/api_service.dart';
 
 class MealBookingScreen extends StatefulWidget {
   const MealBookingScreen({super.key});
@@ -308,6 +309,37 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
       if (selected.contains(j)) {
         selectedNames.add(items[j]['name'] as String);
       }
+    }
+
+    if (selected.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select at least one item'))
+      );
+      return;
+    }
+
+    final slotId = index + 1;
+    final dateStr = '${_selectedDate.year}-${_selectedDate.month.toString().padLeft(2, '0')}-${_selectedDate.day.toString().padLeft(2, '0')}';
+    final itemIds = selected.toList();
+
+    try {
+      final response = await ApiService.createBooking(slotId, dateStr, itemIds);
+      if (response.statusCode != 201 && response.statusCode != 200) {
+        if (mounted) {
+          final errMap = jsonDecode(response.body);
+          final errStr = errMap['detail'] ?? 'Booking failed';
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(errStr.toString())));
+        }
+        return;
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Booking successful!')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+      }
+      return;
     }
 
     final orderID =

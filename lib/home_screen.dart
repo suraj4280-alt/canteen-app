@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'app_colors.dart';
 import 'auth_service.dart';
 import 'meal_state.dart';
+import 'services/api_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -25,12 +26,40 @@ class _HomeScreenState extends State<HomeScreen> {
   final String _adminNotice =
       'Menu update: Kheer added tonight'; // Simulated admin state
 
+  List<dynamic> _meals = [];
+  bool _isLoadingMeals = false;
+  String? _mealsError;
+
   @override
   void initState() {
     super.initState();
     _refreshData();
+    _fetchMeals();
     MealStateProvider.instance.addListener(_onStateChanged);
     _timer = Timer.periodic(const Duration(seconds: 30), (_) => _refreshData());
+  }
+
+  Future<void> _fetchMeals() async {
+    setState(() {
+      _isLoadingMeals = true;
+      _mealsError = null;
+    });
+    try {
+      final meals = await ApiService.getMeals();
+      if (mounted) {
+        setState(() {
+          _meals = meals;
+          _isLoadingMeals = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _mealsError = e.toString().replaceAll('Exception: ', '');
+          _isLoadingMeals = false;
+        });
+      }
+    }
   }
 
   @override
@@ -179,6 +208,8 @@ class _HomeScreenState extends State<HomeScreen> {
                       _buildNoticeStrip(),
                       const SizedBox(height: 16),
                       _buildActiveBookingCard(),
+                      const SizedBox(height: 24),
+                      _buildMealsList(),
                       const SizedBox(height: 24),
                     ],
                   ),
@@ -563,6 +594,56 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMealsList() {
+    if (_isLoadingMeals) {
+      return const Center(child: CircularProgressIndicator(color: AppColors.primary));
+    }
+    if (_mealsError != null) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: Text('Error loading meals: $_mealsError', style: const TextStyle(color: Colors.red)),
+      );
+    }
+    if (_meals.isEmpty) {
+      return const SizedBox();
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Available Meal Slots',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: AppColors.textDark,
+            ),
+          ),
+          const SizedBox(height: 12),
+          ListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: _meals.length,
+            itemBuilder: (context, index) {
+              final meal = _meals[index];
+              return Card(
+                margin: const EdgeInsets.only(bottom: 8),
+                color: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                child: ListTile(
+                  title: Text(meal['name'] ?? 'Meal', style: const TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: Text('${meal['start_time']} - ${meal['end_time']}'),
+                  leading: const Icon(Icons.restaurant, color: AppColors.primary),
+                ),
+              );
+            },
           ),
         ],
       ),

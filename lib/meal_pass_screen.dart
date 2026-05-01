@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'app_colors.dart';
 import 'auth_service.dart';
+import 'services/api_service.dart';
 
 class MealToken {
   final String date;
@@ -63,13 +64,44 @@ class _MealPassScreenState extends State<MealPassScreen> {
   List<MealToken> _allTokens = [];
   Timer? _timer;
 
+  String? _qrPayload;
+  bool _isLoadingQr = true;
+  String? _qrError;
+
   @override
   void initState() {
     super.initState();
     _loadData();
+    _fetchQrData();
     _timer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (mounted) setState(() {});
     });
+  }
+
+  Future<void> _fetchQrData() async {
+    // Extract booking ID from orderID or use fallback
+    int bookingId = 1; 
+    if (widget.orderID != null) {
+      bookingId = int.tryParse(widget.orderID!.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1;
+    }
+    
+    try {
+      final data = await ApiService.getQrData(bookingId);
+      if (mounted) {
+        setState(() {
+          _qrPayload = data['qr_payload'] ?? 'INVALID_PAYLOAD';
+          _isLoadingQr = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _qrError = e.toString().replaceAll('Exception: ', '');
+          _isLoadingQr = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to load QR: $_qrError')));
+      }
+    }
   }
 
   @override
@@ -485,12 +517,15 @@ class _MealPassScreenState extends State<MealPassScreen> {
                   child: SizedBox(
                     width: 180,
                     height: 180,
-                    child: QrImageView(
-                      data:
-                          '${token.uid}|${token.date}|${token.meal}|${token.orderId}',
-                      version: QrVersions.auto,
-                      backgroundColor: Colors.white,
-                    ),
+                    child: _isLoadingQr
+                      ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+                      : _qrError != null
+                          ? Center(child: Text('QR Error', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)))
+                          : QrImageView(
+                              data: _qrPayload ?? '${token.uid}|${token.date}|${token.meal}|${token.orderId}',
+                              version: QrVersions.auto,
+                              backgroundColor: Colors.white,
+                            ),
                   ),
                 ),
                 const SizedBox(height: 20),

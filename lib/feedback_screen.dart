@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'dart:convert';
 import 'app_colors.dart';
 import 'meal_state.dart';
-import 'auth_service.dart';
+import 'services/api_service.dart';
 
 class FeedbackScreen extends StatefulWidget {
   const FeedbackScreen({super.key});
@@ -17,6 +15,7 @@ class _FeedbackSlot {
   final String displayDate;
   final String slot; // Breakfast, Lunch...
   final List<String> items;
+  final int? bookingId;
   bool isScanned;
   bool hasFeedback;
   int foodRating;
@@ -29,6 +28,7 @@ class _FeedbackSlot {
     required this.displayDate,
     required this.slot,
     required this.items,
+    this.bookingId,
     this.isScanned = false,
     this.hasFeedback = false,
     this.foodRating = 0,
@@ -90,74 +90,60 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
 
   Future<void> _loadData() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final keys = prefs.getKeys();
-      final List<_FeedbackSlot> loaded = [];
+      // Load bookings that have been consumed (status = used) to show for feedback
+      final historyData = await ApiService.getBookingHistory(page: 1, size: 50);
+      final bookingItems = historyData['items'] as List<dynamic>;
 
-      final uid = AuthService.currentUser?['uid'] ?? 'default';
-
-      for (final key in keys) {
-        if (key.startsWith('booked_${uid}_')) {
-          final parts = key.split('_');
-          if (parts.length >= 4) {
-            final dateKey = parts[2];
-            final slot = parts[3];
-            final status = prefs.getString(key);
-
-            if (status == 'true') {
-              // It's a booked meal
-              final itemsJson = prefs.getString(
-                'items_${uid}_${dateKey}_$slot',
-              );
-              final items = itemsJson != null
-                  ? List<String>.from(jsonDecode(itemsJson))
-                  : <String>[];
-
-              final isScanned =
-                  prefs.getString('scanned_${uid}_${dateKey}_$slot') == 'true';
-              final hasFeedback =
-                  prefs.getBool('feedback_${uid}_${dateKey}_$slot') ?? false;
-
-              int foodRating = 0, serviceRating = 0, cleanlinessRating = 0;
-              String comment = '';
-              if (hasFeedback) {
-                foodRating =
-                    prefs.getInt('feedback_food_${uid}_${dateKey}_$slot') ?? 0;
-                serviceRating =
-                    prefs.getInt('feedback_service_${uid}_${dateKey}_$slot') ??
-                    0;
-                cleanlinessRating =
-                    prefs.getInt(
-                      'feedback_cleanliness_${uid}_${dateKey}_$slot',
-                    ) ??
-                    0;
-                comment =
-                    prefs.getString(
-                      'feedback_comment_${uid}_${dateKey}_$slot',
-                    ) ??
-                    '';
-              }
-
-              loaded.add(
-                _FeedbackSlot(
-                  dateKey: dateKey,
-                  displayDate: _formatDisplayDate(dateKey),
-                  slot: '${slot[0].toUpperCase()}${slot.substring(1)}',
-                  items: items,
-                  isScanned: isScanned,
-                  hasFeedback: hasFeedback,
-                  foodRating: foodRating,
-                  serviceRating: serviceRating,
-                  cleanlinessRating: cleanlinessRating,
-                  comment: comment,
-                ),
-              );
-            }
-          }
+      // Load existing feedback to mark which ones already have feedback
+      final existingFeedback = await ApiService.getFeedback();
+      final feedbackBookingIds = <int>{};
+      for (final fb in existingFeedback) {
+        if (fb['booking_id'] != null) {
+          feedbackBookingIds.add(fb['booking_id'] as int);
         }
       }
 
-      // Sort newest first
+      final List<_FeedbackSlot> loaded = [];
+      for (final item in bookingItems) {
+        final statusName = item['status_name']?.toString() ?? '';
+        // Only show consumed (used) bookings for feedback
+        if (statusName != 'used') continue;
+
+        final bookingId = item['id'] as int? ?? 0;
+        final dateStr = item['date']?.toString() ?? '';
+        final slotName = item['slot_name']?.toString() ?? 'Meal';
+        final hasFeedback = feedbackBookingIds.contains(bookingId);
+
+        // Find existing feedback ratings if available
+        int foodRating = 0, serviceRating = 0, cleanlinessRating = 0;
+        String comment = '';
+        if (hasFeedback) {
+          for (final fb in existingFeedback) {
+            if (fb['booking_id'] == bookingId) {
+              foodRating = fb['food_rating'] as int? ?? 0;
+              serviceRating = fb['service_rating'] as int? ?? 0;
+              cleanlinessRating = fb['cleanliness_rating'] as int? ?? 0;
+              comment = fb['comment']?.toString() ?? '';
+              break;
+            }
+          }
+        }
+
+        loaded.add(_FeedbackSlot(
+          dateKey: dateStr,
+          displayDate: _formatDisplayDate(dateStr),
+          slot: slotName,
+          items: [],
+          bookingId: bookingId,
+          isScanned: true, // used bookings are always scanned
+          hasFeedback: hasFeedback,
+          foodRating: foodRating,
+          serviceRating: serviceRating,
+          cleanlinessRating: cleanlinessRating,
+          comment: comment,
+        ));
+      }
+
       loaded.sort((a, b) => b.dateKey.compareTo(a.dateKey));
 
       if (mounted) {
@@ -173,16 +159,6 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
     }
   }
 
-  Future<void> _simulateScan(_FeedbackSlot slot) async {
-    final uid = AuthService.currentUser?['uid'] ?? 'default';
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      'scanned_${uid}_${slot.dateKey}_${slot.slot.toLowerCase()}',
-      'true',
-    );
-    _loadData();
-  }
-
   Future<void> _submitFeedback(
     _FeedbackSlot slot,
     int food,
@@ -190,27 +166,45 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
     int clean,
     String comment,
   ) async {
-    final prefs = await SharedPreferences.getInstance();
-    final lowerSlot = slot.slot.toLowerCase();
-    await prefs.setBool('feedback_submitted_${slot.dateKey}_$lowerSlot', true);
-    await prefs.setInt('feedback_food_${slot.dateKey}_$lowerSlot', food);
-    await prefs.setInt('feedback_service_${slot.dateKey}_$lowerSlot', service);
-    await prefs.setInt(
-      'feedback_cleanliness_${slot.dateKey}_$lowerSlot',
-      clean,
-    );
-    await prefs.setString(
-      'feedback_comment_${slot.dateKey}_$lowerSlot',
-      comment,
-    );
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Thank you for your feedback! 🙏'),
-        backgroundColor: AppColors.primary,
-      ),
-    );
-    _loadData();
+    if (slot.bookingId == null) return;
+    try {
+      final response = await ApiService.submitFeedback(
+        bookingId: slot.bookingId!,
+        foodRating: food,
+        serviceRating: service,
+        cleanlinessRating: clean,
+        comment: comment.isNotEmpty ? comment : null,
+      );
+      if (response.statusCode == 201 || response.statusCode == 200) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Thank you for your feedback! 🙏'),
+              backgroundColor: AppColors.primary,
+            ),
+          );
+        }
+        _loadData();
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Failed to submit feedback'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: ${e.toString().replaceAll('Exception: ', '')}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   @override
@@ -337,58 +331,6 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
                       fontSize: 10,
                       fontWeight: FontWeight.w700,
                       color: AppColors.success,
-                    ),
-                  ),
-                )
-              else if (!slot.isScanned)
-                GestureDetector(
-                  onDoubleTap: () =>
-                      _simulateScan(slot), // Secret double tap to simulate scan
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFF3F4F6),
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: const Row(
-                      children: [
-                        Icon(
-                          Icons.lock_outline,
-                          size: 12,
-                          color: AppColors.textMuted,
-                        ),
-                        SizedBox(width: 4),
-                        Text(
-                          'LOCKED',
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.textMuted,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              else
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFEF2F2),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: const Text(
-                    'PENDING',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.red,
                     ),
                   ),
                 ),

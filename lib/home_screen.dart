@@ -1,12 +1,9 @@
 import 'package:flutter/material.dart';
 import 'dart:math' as math;
 import 'dart:async';
-import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'app_colors.dart';
-import 'auth_service.dart';
-import 'meal_state.dart';
 import 'services/api_service.dart';
+import 'meal_state.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -23,8 +20,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _countdownString = '';
   bool _hasActiveBooking = false;
   Map<String, dynamic>? _activeBooking;
-  final String _adminNotice =
-      'Menu update: Kheer added tonight'; // Simulated admin state
+  final String _adminNotice = ''; // Populated dynamically if needed
 
   List<dynamic> _meals = [];
   bool _isLoadingMeals = false;
@@ -35,8 +31,60 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _refreshData();
     _fetchMeals();
+    _fetchUpcomingBooking();
     MealStateProvider.instance.addListener(_onStateChanged);
     _timer = Timer.periodic(const Duration(seconds: 30), (_) => _refreshData());
+  }
+
+  Future<void> _fetchUpcomingBooking() async {
+    try {
+      final upcoming = await ApiService.getUpcomingBookings();
+      if (mounted && upcoming.isNotEmpty) {
+        final currentSlotName = getCurrentSlot();
+        final todayStr = DateTime.now().toIso8601String().substring(0, 10);
+        
+        // Find if the current slot is booked today
+        Map<String, dynamic>? currentBooking;
+        for (final b in upcoming) {
+          if (b['date']?.toString() == todayStr && b['slot_name']?.toString() == currentSlotName) {
+            currentBooking = b;
+            break;
+          }
+        }
+
+        if (currentBooking != null) {
+          final booking = currentBooking;
+          setState(() {
+            _hasActiveBooking = true;
+            _activeBooking = {
+              'meal': booking['slot_name']?.toString() ?? 'Meal',
+              'isTomorrow': false,
+              'orderId': booking['order_id']?.toString() ?? '',
+              'items': <String>[booking['slot_name']?.toString() ?? 'Meal'],
+              'bookingId': booking['id'],
+            };
+          });
+        } else {
+          setState(() {
+            _hasActiveBooking = false;
+            _activeBooking = null;
+          });
+        }
+      } else if (mounted) {
+        setState(() {
+          _hasActiveBooking = false;
+          _activeBooking = null;
+        });
+      }
+    } catch (e) {
+      debugPrint('Failed to fetch upcoming booking: $e');
+      if (mounted) {
+        setState(() {
+          _hasActiveBooking = false;
+          _activeBooking = null;
+        });
+      }
+    }
   }
 
   Future<void> _fetchMeals() async {
@@ -73,6 +121,43 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) _refreshData();
   }
 
+  String? getCurrentSlot() {
+    final now = DateTime.now();
+    final h = now.hour;
+    final m = now.minute;
+    final totalMinutes = h * 60 + m;
+
+    // Use dynamically loaded slot times from API
+    if (_meals.isNotEmpty) {
+      for (final slot in _meals) {
+        final startStr = slot['start_time']?.toString() ?? '';
+        final endStr = slot['end_time']?.toString() ?? '';
+        if (startStr.length >= 5 && endStr.length >= 5) {
+          final start = _timeToMinutes(startStr);
+          final end = _timeToMinutes(endStr);
+          if (totalMinutes >= start && totalMinutes <= end) {
+            return slot['name']?.toString();
+          }
+        }
+      }
+      return null;
+    }
+
+    // Fallback: hardcoded values matching DB seed data
+    if (totalMinutes >= 450 && totalMinutes <= 600) return 'Breakfast';  // 07:30-10:00
+    if (totalMinutes >= 735 && totalMinutes <= 870) return 'Lunch';      // 12:15-14:30
+    if (totalMinutes >= 990 && totalMinutes <= 1080) return 'Snacks';    // 16:30-18:00
+    if (totalMinutes >= 1170 && totalMinutes <= 1350) return 'Dinner';   // 19:30-22:30
+    return null;
+  }
+
+
+  /// Parses a time string like "07:30:00" into total minutes since midnight.
+  int _timeToMinutes(String timeStr) {
+    final parts = timeStr.split(':');
+    return int.parse(parts[0]) * 60 + int.parse(parts[1]);
+  }
+
   Future<void> _refreshData() async {
     final now = DateTime.now();
     final h = now.hour;
@@ -83,110 +168,68 @@ class _HomeScreenState extends State<HomeScreen> {
         '${hr12.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')} $ampm';
 
     final totalMinutes = h * 60 + m;
-    String phase;
-    String targetMealForBooking;
-    DateTime cutoffTime;
-
-    if (totalMinutes < 10 * 60) {
-      phase = 'Breakfast';
-      targetMealForBooking = 'lunch';
-      cutoffTime = DateTime(now.year, now.month, now.day, 12, 0);
-    } else if (totalMinutes < 14 * 60 + 30) {
-      phase = 'Lunch';
-      targetMealForBooking = 'snacks';
-      cutoffTime = DateTime(now.year, now.month, now.day, 16, 30);
-    } else if (totalMinutes < 18 * 60) {
-      phase = 'Snacks';
-      targetMealForBooking = 'dinner';
-      cutoffTime = DateTime(now.year, now.month, now.day, 20, 0);
-    } else if (totalMinutes < 22 * 60 + 30) {
-      phase = 'Dinner';
-      targetMealForBooking = 'breakfast';
-      cutoffTime = DateTime(now.year, now.month, now.day + 1, 7, 30);
-    } else {
-      phase = 'Breakfast';
-      targetMealForBooking = 'lunch';
-      cutoffTime = DateTime(now.year, now.month, now.day + 1, 12, 0);
-    }
-
-    final diff = cutoffTime.difference(now);
+    String phase = 'Unknown';
     String countdown = '';
-    if (diff.isNegative) {
-      countdown = "Booking closed";
-    } else {
-      final dh = diff.inHours;
-      final dm = diff.inMinutes % 60;
-      final targetName = targetMealForBooking == 'breakfast'
-          ? "Tomorrow's breakfast"
-          : (targetMealForBooking == 'lunch' && totalMinutes >= 22 * 60 + 30
-                ? "Tomorrow's lunch"
-                : "Today's $targetMealForBooking");
-      countdown = "$targetName booking closes in ${dh}h ${dm}m";
-    }
 
-    final prefs = await SharedPreferences.getInstance();
-    final uid = AuthService.currentUser?['uid'] ?? 'default';
+    // Use dynamic slot data from API if available
+    if (_meals.isNotEmpty) {
+      // Find the current active slot
+      for (final slot in _meals) {
+        final startMin = _timeToMinutes(slot['start_time'].toString());
+        final endMin = _timeToMinutes(slot['end_time'].toString());
+        if (totalMinutes >= startMin && totalMinutes <= endMin) {
+          phase = slot['name'] ?? 'Unknown';
+          break;
+        }
+      }
 
-    final todayStr =
-        '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
-    final tomorrow = now.add(const Duration(days: 1));
-    final tomorrowStr =
-        '${tomorrow.year}-${tomorrow.month.toString().padLeft(2, '0')}-${tomorrow.day.toString().padLeft(2, '0')}';
+      // If no active slot, find the next upcoming one
+      if (phase == 'Unknown') {
+        for (final slot in _meals) {
+          final startMin = _timeToMinutes(slot['start_time'].toString());
+          if (totalMinutes < startMin) {
+            phase = '${slot['name']} (upcoming)';
+            break;
+          }
+        }
+        if (phase == 'Unknown') {
+          phase = _meals.first['name'] ?? 'Breakfast';
+        }
+      }
 
-    final orderOfChecks = [
-      {'date': todayStr, 'meal': 'breakfast', 'max': 10 * 60},
-      {'date': todayStr, 'meal': 'lunch', 'max': 14 * 60 + 30},
-      {'date': todayStr, 'meal': 'snacks', 'max': 18 * 60},
-      {'date': todayStr, 'meal': 'dinner', 'max': 22 * 60 + 30},
-      {'date': tomorrowStr, 'meal': 'breakfast', 'max': 24 * 60},
-      {'date': tomorrowStr, 'meal': 'lunch', 'max': 24 * 60},
-      {'date': tomorrowStr, 'meal': 'snacks', 'max': 24 * 60},
-      {'date': tomorrowStr, 'meal': 'dinner', 'max': 24 * 60},
-    ];
-
-    Map<String, dynamic>? foundBooking;
-
-    for (final check in orderOfChecks) {
-      final date = check['date'] as String;
-      final meal = check['meal'] as String;
-      final max = check['max'] as int;
-
-      if (date == todayStr && totalMinutes >= max) continue;
-
-      final key = 'booked_${uid}_${date}_$meal';
-      if (prefs.getString(key) == 'true') {
-        final itemsStr = prefs.getString('items_${uid}_${date}_$meal');
-        final items = itemsStr != null
-            ? List<String>.from(jsonDecode(itemsStr))
-            : <String>[];
-
-        final orderIdStr = (uid + date + meal).hashCode.toString().replaceAll(
-          '-',
-          '',
-        );
-        final orderId =
-            '#ORD-${orderIdStr.length > 4 ? orderIdStr.substring(0, 4) : orderIdStr}';
-
-        foundBooking = {
-          'date': date,
-          'meal': meal[0].toUpperCase() + meal.substring(1),
-          'items': items,
-          'orderId': orderId,
-          'isTomorrow': date == tomorrowStr,
-        };
-        break;
+      // Find next booking cutoff
+      for (final slot in _meals) {
+        final cutoffStr = slot['booking_cutoff_time']?.toString();
+        if (cutoffStr == null) continue;
+        final cutoffMin = _timeToMinutes(cutoffStr);
+        if (totalMinutes < cutoffMin) {
+          final diffMin = cutoffMin - totalMinutes;
+          final dh = diffMin ~/ 60;
+          final dm = diffMin % 60;
+          countdown = "${slot['name']} booking closes in ${dh}h ${dm}m";
+          break;
+        }
+      }
+      if (countdown.isEmpty) {
+        countdown = "Booking closed for today";
       }
     }
 
     if (mounted) {
       setState(() {
-        _currentPhase = phase;
-        _timeString = _timeString;
+        _currentPhase = phase.replaceAll(' (upcoming)', '');
         _countdownString = countdown;
-        _activeBooking = foundBooking;
-        _hasActiveBooking = foundBooking != null;
       });
     }
+  }
+
+  /// Pull-to-refresh handler — reloads all data
+  Future<void> _handleRefresh() async {
+    await Future.wait([
+      _fetchMeals(),
+      _fetchUpcomingBooking(),
+    ]);
+    _refreshData();
   }
 
   @override
@@ -199,19 +242,24 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               _buildTopBar(),
               Expanded(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.only(bottom: 110),
-                  child: Column(
-                    children: [
-                      _buildMealArcSection(),
-                      const SizedBox(height: 16),
-                      _buildNoticeStrip(),
-                      const SizedBox(height: 16),
-                      _buildActiveBookingCard(),
-                      const SizedBox(height: 24),
-                      _buildMealsList(),
-                      const SizedBox(height: 24),
-                    ],
+                child: RefreshIndicator(
+                  color: AppColors.primary,
+                  onRefresh: _handleRefresh,
+                  child: SingleChildScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.only(bottom: 110),
+                    child: Column(
+                      children: [
+                        _buildMealArcSection(),
+                        const SizedBox(height: 16),
+                        _buildNoticeStrip(),
+                        const SizedBox(height: 16),
+                        _buildActiveBookingCard(),
+                        const SizedBox(height: 24),
+                        _buildMealsList(),
+                        const SizedBox(height: 24),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -227,7 +275,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildTopBar() {
-    final user = AuthService.currentUser;
+    final user = ApiService.currentUser;
     final firstName = user?['firstName'] ?? 'Student';
     final room = user?['room'] ?? '---';
     final hostel = user?['hostel'] ?? '---';
@@ -404,6 +452,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildNoticeStrip() {
+    final notice = _countdownString.isNotEmpty ? _countdownString : _adminNotice;
+    if (notice.isEmpty) return const SizedBox.shrink();
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 20),
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
@@ -428,7 +478,7 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(width: 12),
           Expanded(
             child: Text(
-              _adminNotice,
+              notice,
               style: const TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
@@ -607,19 +657,73 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_mealsError != null) {
       return Padding(
         padding: const EdgeInsets.symmetric(horizontal: 20),
-        child: Text('Error loading meals: $_mealsError', style: const TextStyle(color: Colors.red)),
+        child: Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Colors.red.shade50,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.red.shade200),
+          ),
+          child: Column(
+            children: [
+              Icon(Icons.wifi_off_rounded, color: Colors.red.shade400, size: 32),
+              const SizedBox(height: 8),
+              Text(
+                _mealsError!,
+                style: TextStyle(color: Colors.red.shade700, fontSize: 13),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                height: 36,
+                child: ElevatedButton.icon(
+                  onPressed: _fetchMeals,
+                  icon: const Icon(Icons.refresh, size: 16),
+                  label: const Text('Retry', style: TextStyle(fontSize: 13)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       );
     }
-    if (_meals.isEmpty) {
-      return const SizedBox();
+    
+    final currentSlotName = getCurrentSlot();
+    final displayedMeals = _meals.where((meal) => meal['name'] == currentSlotName).toList();
+
+    if (displayedMeals.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: const [
+            Text(
+              'Current Active Meal',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: AppColors.textDark,
+              ),
+            ),
+            SizedBox(height: 12),
+            Text('No active meal slot right now.', style: TextStyle(color: AppColors.textMuted)),
+          ],
+        ),
+      );
     }
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Available Meal Slots',
+            'Current Active Meal',
             style: TextStyle(
               fontSize: 16,
               fontWeight: FontWeight.bold,
@@ -630,9 +734,9 @@ class _HomeScreenState extends State<HomeScreen> {
           ListView.builder(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
-            itemCount: _meals.length,
+            itemCount: displayedMeals.length,
             itemBuilder: (context, index) {
-              final meal = _meals[index];
+              final meal = displayedMeals[index];
               return Card(
                 margin: const EdgeInsets.only(bottom: 8),
                 color: Colors.white,

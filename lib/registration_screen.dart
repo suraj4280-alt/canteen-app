@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
-import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'app_colors.dart';
-import 'auth_service.dart';
+import 'services/api_service.dart';
 
 class RegistrationScreen extends StatefulWidget {
   const RegistrationScreen({super.key});
@@ -193,62 +191,21 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     setState(() => _isLoading = true);
 
     final email = _emailController.text.trim().toLowerCase();
-    final phone = _phoneController.text.trim();
     final uid = _uidController.text.trim().toUpperCase();
-
-    final prefs = await SharedPreferences.getInstance();
-    final keys = prefs.getKeys();
-    bool duplicate = false;
-    for (final key in keys) {
-      if (key.startsWith('user_')) {
-        try {
-          final userJson = prefs.getString(key);
-          if (userJson != null) {
-            final userMap = jsonDecode(userJson);
-            if (userMap['email'] == email) {
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Email already registered')),
-                );
-              }
-              duplicate = true;
-              break;
-            }
-            if (userMap['uid'] == uid) {
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('UID already registered')),
-                );
-              }
-              duplicate = true;
-              break;
-            }
-          }
-        } catch (_) {}
-      }
-    }
-
-    if (duplicate) {
-      setState(() => _isLoading = false);
-      return;
-    }
 
     String capitalize(String s) =>
         s.isNotEmpty ? s[0].toUpperCase() + s.substring(1).toLowerCase() : '';
 
     final fn = _firstNameController.text.trim();
     final ln = _lastNameController.text.trim();
-    final mn = _middleNameController.text.trim();
 
-    final error = await AuthService.registerUser(
+    // Call backend API instead of local storage
+    final error = await ApiService.register(
       firstName: capitalize(fn),
-      middleName: capitalize(mn),
       lastName: capitalize(ln),
       email: email,
-      phone: phone,
       uid: uid,
       hostel: _selectedHostel!,
-      room: _roomController.text.trim().toUpperCase(),
       password: _passwordController.text,
     );
 

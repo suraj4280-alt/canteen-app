@@ -331,7 +331,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        "Today's Special",
+                        "Campus Dining",
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.w700,
@@ -339,7 +339,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                       ),
                       Text(
-                        'PANEER BUTTER MASALA & NAAN',
+                        'BOOK YOUR MEALS AHEAD',
                         style: TextStyle(
                           fontSize: 10,
                           color: AppColors.textMuted,

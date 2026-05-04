@@ -1,18 +1,17 @@
 import 'package:flutter/material.dart';
-import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'app_colors.dart';
 import 'meal_pass_screen.dart';
 import 'meal_state.dart';
-import 'auth_service.dart';
+import 'services/api_service.dart';
 
 class MealHistoryEntry {
   final String date;
   final String mealType;
   final String menuName;
   final String items;
-  final String status; // 'COMPLETED', 'BOOKED', 'SKIPPED'
+  final String status; // 'COMPLETED', 'BOOKED', 'SKIPPED', 'CANCELLED'
   final String orderID;
+  final int bookingId;
   final String? skipReason;
   final String rawMealType;
   final List<String> rawItemsList;
@@ -24,6 +23,7 @@ class MealHistoryEntry {
     required this.items,
     required this.status,
     required this.orderID,
+    required this.bookingId,
     this.skipReason,
     required this.rawMealType,
     required this.rawItemsList,
@@ -47,6 +47,7 @@ class _MealHistoryScreenState extends State<MealHistoryScreen> {
     'Skipped',
     'Completed',
     'Cancelled',
+    'Missed',
   ];
 
   String _dateFilter = 'All Time';
@@ -75,73 +76,46 @@ class _MealHistoryScreenState extends State<MealHistoryScreen> {
     super.dispose();
   }
 
+  String _statusLabel(String statusName) {
+    switch (statusName) {
+      case 'used': return 'COMPLETED';
+      case 'booked': return 'BOOKED';
+      case 'skipped': return 'SKIPPED';
+      case 'cancelled': return 'CANCELLED';
+      case 'pending': return 'PENDING';
+      case 'expired': return 'EXPIRED';
+      case 'absent': return 'NO SHOW';
+      case 'missed': return 'MISSED';
+      default: return statusName.toUpperCase();
+    }
+  }
+
   Future<void> _loadHistory() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final keys = prefs.getKeys();
+      final data = await ApiService.getBookingHistory(page: 1, size: 100);
+      final items = data['items'] as List<dynamic>;
       final entries = <MealHistoryEntry>[];
 
-      final uid = AuthService.currentUser?['uid'] ?? 'default';
+      for (final item in items) {
+        final dateStr = item['date']?.toString() ?? '';
+        final slotName = item['slot_name']?.toString() ?? 'Meal';
+        final statusName = item['status_name']?.toString() ?? 'booked';
+        final orderId = item['order_id']?.toString() ?? '';
+        final bookingId = item['id'] as int? ?? 0;
+        final skipReason = item['skip_reason']?.toString();
 
-      for (final key in keys) {
-        if (key.startsWith('booked_${uid}_')) {
-          final parts = key.split('_');
-          if (parts.length >= 4) {
-            final dateStr = parts[2];
-            final mealType = parts[3];
-            final statusStr = prefs.getString(key);
-
-            final status = statusStr == 'cancelled' ? 'CANCELLED' : 'BOOKED';
-
-            final itemsJson = prefs.getString(
-              'items_${uid}_${dateStr}_$mealType',
-            );
-            final itemsList = itemsJson != null
-                ? List<String>.from(jsonDecode(itemsJson))
-                : <String>[];
-            final itemsStr = itemsList.isEmpty
-                ? 'No items selected'
-                : itemsList.join(', ');
-
-            entries.add(
-              MealHistoryEntry(
-                date: dateStr,
-                mealType: mealType.toUpperCase(),
-                menuName:
-                    '${mealType[0].toUpperCase()}${mealType.substring(1)} Menu',
-                items: itemsStr,
-                status: status,
-                orderID: '#ORD-4921',
-                rawMealType: mealType,
-                rawItemsList: itemsList,
-              ),
-            );
-          }
-        } else if (key.startsWith('skipped_${uid}_')) {
-          final parts = key.split('_');
-          if (parts.length >= 4) {
-            final dateStr = parts[2];
-            final mealType = parts[3];
-            final skipReason = prefs.getString(
-              'skipReason_${uid}_${dateStr}_$mealType',
-            );
-
-            entries.add(
-              MealHistoryEntry(
-                date: dateStr,
-                mealType: mealType.toUpperCase(),
-                menuName:
-                    '${mealType[0].toUpperCase()}${mealType.substring(1)} Menu',
-                items: 'No items selected',
-                status: 'SKIPPED',
-                orderID: '#ORD-4921',
-                skipReason: skipReason ?? 'Other',
-                rawMealType: mealType,
-                rawItemsList: [],
-              ),
-            );
-          }
-        }
+        entries.add(MealHistoryEntry(
+          date: dateStr,
+          mealType: slotName,
+          menuName: '$slotName Menu',
+          items: '', // items are not in this response — that's fine
+          status: _statusLabel(statusName),
+          orderID: orderId,
+          bookingId: bookingId,
+          skipReason: skipReason,
+          rawMealType: slotName,
+          rawItemsList: [],
+        ));
       }
 
       entries.sort((a, b) {
@@ -282,13 +256,24 @@ class _MealHistoryScreenState extends State<MealHistoryScreen> {
                     ),
                     onPressed: () async {
                       Navigator.pop(ctx);
-                      final prefs = await SharedPreferences.getInstance();
-                      final uid = AuthService.currentUser?['uid'] ?? 'default';
-                      await prefs.setString(
-                        'booked_${uid}_${entry.date}_${entry.rawMealType.toLowerCase()}',
-                        'cancelled',
-                      );
-                      MealStateProvider.instance.notifyStateChanged();
+                      try {
+                        final response = await ApiService.cancelBooking(entry.bookingId);
+                        if (response.statusCode == 200) {
+                          MealStateProvider.instance.notifyStateChanged();
+                        } else {
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Failed to cancel booking'), backgroundColor: Colors.red),
+                            );
+                          }
+                        }
+                      } catch (e) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Error: ${e.toString().replaceAll("Exception: ", "")}'), backgroundColor: Colors.red),
+                          );
+                        }
+                      }
                     },
                     child: const Text(
                       'Confirm',
@@ -305,15 +290,29 @@ class _MealHistoryScreenState extends State<MealHistoryScreen> {
   }
 
   Future<void> _undoSkip(MealHistoryEntry entry) async {
-    final uid = AuthService.currentUser?['uid'] ?? 'default';
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(
-      'skipped_${uid}_${entry.date}_${entry.rawMealType.toLowerCase()}',
-    );
-    await prefs.remove(
-      'skipReason_${uid}_${entry.date}_${entry.rawMealType.toLowerCase()}',
-    );
-    MealStateProvider.instance.notifyStateChanged();
+    try {
+      final response = await ApiService.undoSkipBooking(entry.bookingId);
+      if (response.statusCode == 200) {
+        MealStateProvider.instance.notifyStateChanged();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Skip undone successfully'), backgroundColor: AppColors.primary),
+          );
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Failed to undo skip'), backgroundColor: Colors.red),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: ${e.toString().replaceAll("Exception: ", "")}'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   List<MealHistoryEntry> get _filteredEntries {
@@ -366,15 +365,37 @@ class _MealHistoryScreenState extends State<MealHistoryScreen> {
                 ? const Center(
                     child: CircularProgressIndicator(color: AppColors.primary),
                   )
-                : SingleChildScrollView(
-                    padding: const EdgeInsets.only(bottom: 100),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        _buildSummaryStats(),
-                        _buildFilterTabs(),
-                        _buildHistoryList(),
-                      ],
+                : RefreshIndicator(
+                    color: AppColors.primary,
+                    onRefresh: _loadHistory,
+                    child: SingleChildScrollView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.only(bottom: 100),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _buildSummaryStats(),
+                          _buildFilterTabs(),
+                          if (_filteredEntries.isEmpty)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
+                              child: Center(
+                                child: Column(
+                                  children: [
+                                    Icon(Icons.receipt_long_outlined, size: 48, color: AppColors.textDisabled),
+                                    const SizedBox(height: 12),
+                                    Text(
+                                      _activeFilter == 'All' ? 'No meal history yet' : 'No ${_activeFilter.toLowerCase()} meals found',
+                                      style: const TextStyle(fontSize: 15, color: AppColors.textMuted, fontWeight: FontWeight.w500),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            )
+                          else
+                            _buildHistoryList(),
+                        ],
+                      ),
                     ),
                   ),
           ),
@@ -448,22 +469,32 @@ class _MealHistoryScreenState extends State<MealHistoryScreen> {
 
   Widget _buildSummaryStats() {
     int totalBooked = _allEntries.where((e) => e.status == 'BOOKED').length;
-    int totalCompleted = _allEntries
-        .where((e) => e.status == 'COMPLETED')
-        .length;
+    int totalCompleted = _allEntries.where((e) => e.status == 'COMPLETED').length;
     int totalSkipped = _allEntries.where((e) => e.status == 'SKIPPED').length;
+    int totalCancelled = _allEntries.where((e) => e.status == 'CANCELLED').length;
+    int totalMissed = _allEntries.where((e) => e.status == 'MISSED').length;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
-      child: Row(
+      child: Column(
         children: [
-          Expanded(child: _buildStatCard('Booked', totalBooked.toString())),
-          const SizedBox(width: 12),
-          Expanded(
-            child: _buildStatCard('Completed', totalCompleted.toString()),
+          Row(
+            children: [
+              Expanded(child: _buildStatCard('Booked', totalBooked.toString())),
+              const SizedBox(width: 12),
+              Expanded(child: _buildStatCard('Completed', totalCompleted.toString())),
+            ],
           ),
-          const SizedBox(width: 12),
-          Expanded(child: _buildStatCard('Skipped', totalSkipped.toString())),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(child: _buildStatCard('Skipped', totalSkipped.toString())),
+              const SizedBox(width: 12),
+              Expanded(child: _buildStatCard('Cancelled', totalCancelled.toString())),
+              const SizedBox(width: 12),
+              Expanded(child: _buildStatCard('Missed', totalMissed.toString())),
+            ],
+          ),
         ],
       ),
     );
@@ -653,6 +684,10 @@ class _MealHistoryScreenState extends State<MealHistoryScreen> {
         badgeBg = const Color(0xFFFFEBEE);
         badgeText = Colors.red;
         break;
+      case 'MISSED':
+        badgeBg = const Color(0xFFFFF3E0);
+        badgeText = Colors.orange;
+        break;
       case 'BOOKED':
       default:
         badgeBg = const Color(0xFFE8F5E9);
@@ -675,15 +710,22 @@ class _MealHistoryScreenState extends State<MealHistoryScreen> {
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => MealPassScreen(
-              studentName: 'Aryan Shah',
-              roomNumber: '402-B',
-              orderID: entry.orderID,
-              bookedDate: displayDate,
-              location: 'Hostel L5',
-              bookedSlots: [entry.rawMealType],
-              slotItems: {entry.rawMealType: entry.rawItemsList},
-            ),
+            builder: (_) {
+              final user = ApiService.currentUser;
+              final fn = user?['firstName'] ?? '';
+              final ln = user?['lastName'] ?? '';
+              final fullName = '$fn $ln'.trim();
+              return MealPassScreen(
+                studentName: fullName.isNotEmpty ? fullName : 'Student',
+                roomNumber: user?['room'] ?? '---',
+                orderID: entry.orderID,
+                bookingId: entry.bookingId,
+                bookedDate: displayDate,
+                location: 'Hostel ${user?['hostel'] ?? '---'}',
+                bookedSlots: [entry.rawMealType],
+                slotItems: {entry.rawMealType: entry.rawItemsList},
+              );
+            },
           ),
         );
       },

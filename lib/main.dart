@@ -7,11 +7,18 @@ import 'meal_history_screen.dart';
 import 'profile_screen.dart';
 import 'feedback_screen.dart';
 import 'registration_screen.dart';
-import 'auth_service.dart';
+import 'services/api_service.dart';
+
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final isLoggedIn = await AuthService.isLoggedIn();
+  final isLoggedIn = await ApiService.isLoggedIn();
+
+  ApiService.onTokenExpired = () {
+    navigatorKey.currentState?.pushNamedAndRemoveUntil('/login', (route) => false);
+  };
+
   runApp(CMSApp(isLoggedIn: isLoggedIn));
 }
 
@@ -22,6 +29,7 @@ class CMSApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'Hostel Mess CMS',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(

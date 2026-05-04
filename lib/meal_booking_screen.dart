@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'app_colors.dart';
 import 'skip_meal_screen.dart';
 import 'meal_pass_screen.dart';
 import 'meal_state.dart';
-import 'auth_service.dart';
 import 'services/api_service.dart';
 
 class MealBookingScreen extends StatefulWidget {
@@ -19,20 +17,16 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
   late DateTime _selectedDate;
   int _selectedMeal = 0;
   final Map<int, bool> _isRebooking = {0: false, 1: false, 2: false, 3: false};
-  final Map<int, bool> _skippedMeals = {};
-  final Map<int, bool> _bookedMeals = {};
-  final Map<int, bool> _cancelledMeals = {};
   final Map<int, List<String>> _bookedItemsList = {};
+  final Map<int, String> slotStatus = {};
 
-  final List<String> _mealTimes = ['7:30 AM', '12:15 PM', '4:30 PM', '7:30 PM'];
-  final List<String> _mealTabs = ['Breakfast', 'Lunch', 'Snacks', 'Dinner'];
+  // Tasks 9, 10, 11: Dynamic from API — no longer hardcoded
+  List<String> _mealTimes = [];
+  List<String> _mealTabs = [];
+  List<int> _slotIds = []; // Real DB slot IDs
+  Map<int, int?> _existingBookingIds = {}; // Tab index → booking ID (for skip)
 
-  final Map<int, Set<int>> _selectedItems = {
-    0: {0},
-    1: {0},
-    2: {0},
-    3: {0},
-  };
+  final Map<int, Set<int>> _selectedItems = {};
 
   @override
   void initState() {
@@ -43,7 +37,7 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
       now.month,
       now.day,
     ).add(const Duration(days: 1));
-    _loadStateForDate();
+    _loadSlots();
     MealStateProvider.instance.addListener(_onStateChanged);
   }
 
@@ -57,10 +51,49 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
     super.dispose();
   }
 
-  String _formatDateKey(DateTime date) {
-    final uid = AuthService.currentUser?['uid'] ?? 'default';
-    return '${uid}_${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+  /// Tasks 9, 10, 11: Load slot metadata from API once
+  Future<void> _loadSlots() async {
+    try {
+      final slots = await ApiService.getMeals();
+      if (mounted && slots.isNotEmpty) {
+        setState(() {
+          _mealTabs = slots.map((s) => s['name']?.toString() ?? 'Meal').toList();
+          _slotIds = slots.map((s) => s['id'] as int).toList();
+          _mealTimes = slots.map((s) {
+            final cutoff = s['booking_cutoff_time']?.toString() ?? '';
+            if (cutoff.length >= 5) {
+              final parts = cutoff.substring(0, 5).split(':');
+              final h = int.tryParse(parts[0]) ?? 0;
+              final m = parts.length > 1 ? parts[1] : '00';
+              final suffix = h >= 12 ? 'PM' : 'AM';
+              final h12 = h > 12 ? h - 12 : (h == 0 ? 12 : h);
+              return '$h12:$m $suffix';
+            }
+            return cutoff;
+          }).toList();
+          // Initialize selection sets for each slot
+          for (int i = 0; i < _mealTabs.length; i++) {
+            _selectedItems.putIfAbsent(i, () => {0});
+          }
+        });
+        _loadStateForDate();
+      }
+    } catch (_) {
+      // Fallback to hardcoded if API fails
+      if (mounted) {
+        setState(() {
+          _mealTabs = ['Breakfast', 'Lunch', 'Snacks', 'Dinner'];
+          _slotIds = [1, 2, 3, 4];
+          _mealTimes = ['7:30 AM', '12:00 PM', '4:30 PM', '8:00 PM'];
+          for (int i = 0; i < 4; i++) {
+            _selectedItems.putIfAbsent(i, () => {0});
+          }
+        });
+        _loadStateForDate();
+      }
+    }
   }
+
 
   String _formatDate(DateTime date) {
     const months = [
@@ -93,47 +126,56 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
     return selectedDay.isAfter(tomorrow);
   }
 
-  static bool _hasClearedOnce = false;
+  Future<void> loadSlotStatus() async {
+    final dateStr = '${_selectedDate.year}-${_selectedDate.month.toString().padLeft(2, '0')}-${_selectedDate.day.toString().padLeft(2, '0')}';
+    try {
+      final statusMap = await ApiService.getSlotStatus(dateStr);
+      if (mounted) {
+        setState(() {
+          slotStatus.clear();
+          statusMap.forEach((slotIdStr, status) {
+            final slotId = int.tryParse(slotIdStr);
+            if (slotId != null) {
+              // Map DB slotId to tab index
+              final tabIdx = _slotIds.indexOf(slotId);
+              if (tabIdx >= 0) {
+                slotStatus[tabIdx] = status.toString();
+              }
+            }
+          });
+        });
+      }
+    } catch (e) {
+      debugPrint('Failed to load slot status: $e');
+    }
+  }
 
   Future<void> _loadStateForDate() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      if (!_hasClearedOnce) {
-        await prefs.clear(); // One-time wipe to reset stuck state
-        _hasClearedOnce = true;
-      }
-      final dateKey = _formatDateKey(_selectedDate);
+      await _loadMenuForDate();
+      await loadSlotStatus();
       setState(() {
         for (int i = 0; i < _mealTabs.length; i++) {
-          final tabName = _mealTabs[i].toLowerCase();
-          _skippedMeals[i] =
-              prefs.getString('skipped_${dateKey}_$tabName') == 'true';
+          _bookedItemsList[i] = [];
+        }
 
-          final bookedVal = prefs.getString('booked_${dateKey}_$tabName');
-          _bookedMeals[i] = bookedVal == 'true';
-          _cancelledMeals[i] = bookedVal == 'cancelled';
-
-          if (_bookedMeals[i]! || _cancelledMeals[i]!) {
-            final itemsJson = prefs.getString('items_${dateKey}_$tabName');
-            if (itemsJson != null) {
-              _bookedItemsList[i] = List<String>.from(jsonDecode(itemsJson));
-            } else {
-              _bookedItemsList[i] = [];
-            }
-          } else {
-            _bookedItemsList[i] = [];
+        // Default selected items to {0}
+        for (int i = 0; i < 4; i++) {
+          if (_selectedItems[i] == null) {
+            _selectedItems[i] = {0};
           }
         }
 
         if (_isAdvanceOrder) {
           _setToStandardMenu();
-        } else {
-          for (int i = 0; i < 4; i++) {
-            _selectedItems[i] = {0};
-          }
         }
+        _isLoadingMenu = false;
       });
-    } catch (_) {}
+    } catch (_) {
+      if (mounted) {
+        setState(() => _isLoadingMenu = false);
+      }
+    }
   }
 
   void _setToStandardMenu() {
@@ -157,13 +199,7 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
     }
   }
 
-  // ── Per-tab deadline info ──
-  final List<Map<String, dynamic>> _deadlineInfo = [
-    {'closeTime': '7:00 AM today', 'remaining': 45},
-    {'closeTime': '2:00 PM today', 'remaining': 102},
-    {'closeTime': '4:00 PM today', 'remaining': 180},
-    {'closeTime': '6:00 PM today', 'remaining': 240},
-  ];
+
 
   // ── Per-tab menu titles ──
   final List<String> _menuTitles = [
@@ -175,131 +211,65 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
 
   // ── Menu items per tab ──
   // Items with 'exclusive' key share a radio group — only one can be selected.
-  final List<List<Map<String, dynamic>>> _allMenuItems = [
-    // ── Breakfast ──
-    [
-      {
-        'name': 'Poha',
-        'desc': 'Light flattened rice with mustard seeds and curry leaves.',
-        'icon': Icons.rice_bowl,
-        'veg': true,
-      },
-      {
-        'name': 'Boiled Eggs',
-        'desc': 'Two farm-fresh boiled eggs.',
-        'icon': Icons.egg_outlined,
-        'veg': false,
-      },
-      {
-        'name': 'Bread & Butter',
-        'desc': 'Toasted white bread with salted butter.',
-        'icon': Icons.bakery_dining,
-        'veg': true,
-      },
-      {
-        'name': 'Banana',
-        'desc': 'Fresh seasonal fruit.',
-        'icon': Icons.eco,
-        'veg': true,
-      },
-    ],
-    // ── Lunch ──
-    [
-      {
-        'name': 'Rice & Dal',
-        'desc': 'Hand-milled brown rice, aromatic dal tadka.',
-        'icon': Icons.rice_bowl,
-        'veg': true,
-      },
-      {
-        'name': 'Fish Curry Potato',
-        'desc': 'Multi-grain, served warm with butter.',
-        'icon': Icons.set_meal,
-        'veg': false,
-        'exclusive': 'lunch_main',
-      },
-      {
-        'name': 'Paneer',
-        'desc': 'Multi-grain, served warm with butter.',
-        'icon': Icons.lunch_dining,
-        'veg': true,
-        'exclusive': 'lunch_main',
-      },
-      {
-        'name': 'Seasonal Salad',
-        'desc': 'Garden greens with citrus dressing.',
-        'icon': Icons.eco,
-        'veg': true,
-      },
-    ],
-    // ── Snacks ──
-    [
-      {
-        'name': 'Samosa',
-        'desc': 'Crispy fried pastry with spiced potato filling.',
-        'icon': Icons.lunch_dining,
-        'veg': true,
-      },
-      {
-        'name': 'Veg Cutlet',
-        'desc': 'Pan-fried mixed vegetable patty.',
-        'icon': Icons.set_meal,
-        'veg': true,
-      },
-      {
-        'name': 'Chai',
-        'desc': 'Hot ginger tea with milk.',
-        'icon': Icons.coffee,
-        'veg': true,
-      },
-      {
-        'name': 'Biscuits',
-        'desc': 'Assorted cream biscuits.',
-        'icon': Icons.cookie_outlined,
-        'veg': true,
-      },
-    ],
-    // ── Dinner ──
-    [
-      {
-        'name': 'Roti',
-        'desc': 'Fresh soft wheat flatbread.',
-        'icon': Icons.bakery_dining,
-        'veg': true,
-      },
-      {
-        'name': 'Dal Makhani',
-        'desc': 'Slow-cooked black lentils in creamy gravy.',
-        'icon': Icons.rice_bowl,
-        'veg': true,
-      },
-      {
-        'name': 'Chicken Curry',
-        'desc': 'Tender chicken in spiced tomato gravy.',
-        'icon': Icons.set_meal,
-        'veg': false,
-        'exclusive': 'dinner_main',
-      },
-      {
-        'name': 'Paneer Butter Masala',
-        'desc': 'Cottage cheese in rich buttery tomato sauce.',
-        'icon': Icons.lunch_dining,
-        'veg': true,
-        'exclusive': 'dinner_main',
-      },
-      {
-        'name': 'Kheer',
-        'desc': 'Sweet rice pudding with cardamom.',
-        'icon': Icons.icecream,
-        'veg': true,
-      },
-    ],
-  ];
+  final List<List<Map<String, dynamic>>> _allMenuItems = [[], [], [], []];
+  bool _isLoadingMenu = false;
+
+  Future<void> _loadMenuForDate() async {
+    setState(() => _isLoadingMenu = true);
+    final dateStr = '${_selectedDate.year}-${_selectedDate.month.toString().padLeft(2, '0')}-${_selectedDate.day.toString().padLeft(2, '0')}';
+    // Task 11: Use real slot IDs from API
+    for (int i = 0; i < _slotIds.length; i++) {
+      try {
+        final menuData = await ApiService.getMenu(dateStr, _slotIds[i]);
+        final items = (menuData['items'] as List).map((e) => {
+          'id': e['id'],
+          'name': e['name'],
+          'desc': e['description'] ?? '',
+          'icon': (e['type'] == 'veg') ? Icons.eco : Icons.set_meal,
+          'veg': e['type'] == 'veg',
+          'exclusive': e['exclusive_group'],
+        }).toList();
+        _allMenuItems[i] = items;
+      } catch (e) {
+        _allMenuItems[i] = [];
+      }
+    }
+    // Task 3: Fetch existing booking IDs and statuses for this date
+    try {
+      final upcoming = await ApiService.getUpcomingBookings();
+      _existingBookingIds = {};
+      for (final b in upcoming) {
+        final bDate = b['date']?.toString() ?? '';
+        if (bDate == dateStr) {
+          final slotName = b['slot_name']?.toString() ?? '';
+          final tabIdx = _mealTabs.indexOf(slotName);
+          if (tabIdx >= 0) {
+            _existingBookingIds[tabIdx] = b['id'] as int?;
+
+            // Restore selected items for booked meals
+            if (b['item_ids'] != null && b['item_ids'] is List) {
+              final itemIds = List<int>.from(b['item_ids']);
+              if (itemIds.isNotEmpty) {
+                final Set<int> selectedIndices = {};
+                for (int j = 0; j < _allMenuItems[tabIdx].length; j++) {
+                  if (itemIds.contains(_allMenuItems[tabIdx][j]['id'])) {
+                    selectedIndices.add(j);
+                  }
+                }
+                _selectedItems[tabIdx] = selectedIndices;
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Failed to load state for date: $e');
+    }
+  }
 
   // ── Helpers ──
 
   Future<void> _confirmBooking(int index) async {
-    final dateKey = _formatDateKey(_selectedDate);
     final tabName = _mealTabs[index];
     final selectedNames = <String>[];
     final items = _allMenuItems[index];
@@ -318,9 +288,15 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
       return;
     }
 
-    final slotId = index + 1;
+    final slotId = _slotIds.isNotEmpty ? _slotIds[index] : index + 1;
     final dateStr = '${_selectedDate.year}-${_selectedDate.month.toString().padLeft(2, '0')}-${_selectedDate.day.toString().padLeft(2, '0')}';
-    final itemIds = selected.toList();
+    final itemIds = selected.map((idx) => items[idx]['id'] as int).toList();
+
+    // Optimistic UI Update
+    setState(() {
+      slotStatus[index] = "confirmed";
+      _isRebooking[index] = false;
+    });
 
     try {
       final response = await ApiService.createBooking(slotId, dateStr, itemIds);
@@ -330,10 +306,43 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
           final errStr = errMap['detail'] ?? 'Booking failed';
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(errStr.toString())));
         }
-        return;
+        return; // Stop navigation if booking fails
       }
+      
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Booking successful!')));
+      }
+
+      final respData = jsonDecode(response.body);
+      final bookingId = respData['id'] as int?;
+      final orderID = respData['order_id']?.toString() ?? '';
+
+      if (!mounted) return;
+
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) {
+            final user = ApiService.currentUser;
+            final fn = user?['firstName'] ?? '';
+            final ln = user?['lastName'] ?? '';
+            final fullName = '$fn $ln'.trim();
+            return MealPassScreen(
+              studentName: fullName.isNotEmpty ? fullName : 'Student',
+              roomNumber: user?['room'] ?? '---',
+              orderID: orderID,
+              bookingId: bookingId,
+              bookedDate: _formatDate(_selectedDate),
+              location: 'Hostel ${user?['hostel'] ?? '---'}',
+              bookedSlots: [tabName],
+              slotItems: {tabName: selectedNames},
+            );
+          },
+        ),
+      );
+
+      if (mounted) {
+        _loadStateForDate();
       }
     } catch (e) {
       if (mounted) {
@@ -341,50 +350,6 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
       }
       return;
     }
-
-    final orderID =
-        '#ORD-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
-
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(
-        'booked_${dateKey}_${tabName.toLowerCase()}',
-        'true',
-      );
-      await prefs.setString(
-        'items_${dateKey}_${tabName.toLowerCase()}',
-        jsonEncode(selectedNames),
-      );
-
-      await prefs.setString('lastBooking_slots', jsonEncode([tabName]));
-      await prefs.setString(
-        'lastBooking_items',
-        jsonEncode({tabName: selectedNames}),
-      );
-      await prefs.setString('lastBooking_date', _formatDate(_selectedDate));
-      await prefs.setString('lastBooking_orderID', orderID);
-      MealStateProvider.instance.notifyStateChanged();
-    } catch (_) {}
-
-    if (!mounted) return;
-
-    await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => MealPassScreen(
-          studentName: 'Aryan Shah',
-          roomNumber: '402-B',
-          orderID: orderID,
-          bookedDate: _formatDate(_selectedDate),
-          location: 'Hostel L5',
-          bookedSlots: [tabName],
-          slotItems: {tabName: selectedNames},
-        ),
-      ),
-    );
-
-    if (!mounted) return;
-    _loadStateForDate();
   }
 
   String _getSelectedMenuSummary(int index) {
@@ -496,23 +461,39 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
                             ),
                           );
                           if (reason != null && reason is String) {
-                            final prefs = await SharedPreferences.getInstance();
-                            final dateKey = _formatDateKey(_selectedDate);
-                            await prefs.setString(
-                              'skipped_${dateKey}_${mealName.toLowerCase()}',
-                              'true',
-                            );
-                            await prefs.setString(
-                              'skipReason_${dateKey}_${mealName.toLowerCase()}',
-                              reason,
-                            );
-                            MealStateProvider.instance.notifyStateChanged();
-
-                            if (mounted) {
+                            // Optimistic UI update
+                            setState(() {
+                              slotStatus[index] = "skipped";
+                            });
+                            
+                            // Task 3: Wire skip to API with real booking ID
+                            final bookingId = _existingBookingIds[index];
+                            if (bookingId != null) {
+                              try {
+                                final resp = await ApiService.skipBooking(bookingId, reason);
+                                if (resp.statusCode == 200 && mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(content: Text('Meal skipped successfully'), backgroundColor: AppColors.primary),
+                                  );
+                                  _loadStateForDate();
+                                } else if (mounted) {
+                                  final err = jsonDecode(resp.body)['detail'] ?? 'Skip failed';
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text(err.toString()), backgroundColor: Colors.red),
+                                  );
+                                }
+                              } catch (e) {
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text('Error: ${e.toString().replaceAll("Exception: ", "")}'), backgroundColor: Colors.red),
+                                  );
+                                }
+                              }
+                            } else if (mounted) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
-                                  content: Text('Meal skipped successfully'),
-                                  backgroundColor: AppColors.primary,
+                                  content: Text('No active booking found to skip'),
+                                  backgroundColor: Colors.red,
                                 ),
                               );
                             }
@@ -547,6 +528,9 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
 
   void _toggleItem(int mealIndex, int itemIndex) {
     if (_isAdvanceOrder) return; // Disallow customization
+    if (slotStatus[mealIndex] == 'confirmed' && _isRebooking[mealIndex] != true) return; // Already booked
+    if (slotStatus[mealIndex] == 'skipped') return; // Already skipped
+
     final now = DateTime.now();
     final tomorrow = DateTime(
       now.year,
@@ -649,9 +633,9 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
                 ),
               ),
               const SizedBox(width: 10),
-              const Text(
-                'Good Afternoon, Aryan',
-                style: TextStyle(
+              Text(
+                'Good ${DateTime.now().hour < 12 ? 'Morning' : DateTime.now().hour < 17 ? 'Afternoon' : 'Evening'}, ${ApiService.currentUser?['firstName'] ?? 'Student'}',
+                style: const TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w700,
                   color: AppColors.textDark,
@@ -733,9 +717,9 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
       child: Row(
         children: _mealTabs.asMap().entries.map((e) {
           final isSelected = _selectedMeal == e.key;
-          final isSkipped = _skippedMeals[e.key] == true;
-          final isBooked = _bookedMeals[e.key] == true;
-          final isCancelled = _cancelledMeals[e.key] == true;
+          final isSkipped = slotStatus[e.key] == 'skipped';
+          final isBooked = slotStatus[e.key] == 'confirmed';
+          final isCancelled = slotStatus[e.key] == 'cancelled';
 
           return Expanded(
             child: GestureDetector(
@@ -775,26 +759,10 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
                       ),
                       const SizedBox(height: 4),
                       if (isSkipped)
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 1,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(
-                              0xFFB91C1C,
-                            ).withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: const Text(
-                            'SKIPPED',
-                            style: TextStyle(
-                              fontSize: 8,
-                              fontWeight: FontWeight.w700,
-                              color: Color(0xFFB91C1C),
-                              letterSpacing: 0.3,
-                            ),
-                          ),
+                        const Icon(
+                          Icons.do_not_disturb_alt,
+                          size: 14,
+                          color: Color(0xFFB91C1C),
                         )
                       else if (isCancelled)
                         Container(
@@ -897,9 +865,10 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
   }
 
   Widget _buildSlotCard(int index) {
-    final isBooked = _bookedMeals[index] == true;
-    final isSkipped = _skippedMeals[index] == true;
-    final isCancelled = _cancelledMeals[index] == true;
+    final status = slotStatus[index];
+    final isBooked = status == 'confirmed' || status == 'booked';
+    final isSkipped = slotStatus[index] == 'skipped';
+    final isCancelled = slotStatus[index] == 'cancelled';
     final isRebooking = _isRebooking[index] == true;
 
     final isPending = !isBooked && !isSkipped && !isCancelled;
@@ -921,7 +890,6 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
     final items = _allMenuItems[index];
     final tabName = _mealTabs[index];
     final cutoffPassed = _isCutoffPassed(_selectedDate, tabName);
-    final info = _deadlineInfo[index];
 
     if (!isTomorrow && isActive) {
       return Padding(
@@ -975,6 +943,15 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
               ),
             ],
           ),
+        ),
+      );
+    }
+
+    if (_isLoadingMenu) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(40.0),
+          child: CircularProgressIndicator(),
         ),
       );
     }
@@ -1039,10 +1016,11 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
+
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Booking closes at ${info['closeTime']}',
+                          'Booking closes at ${_mealTimes[index]}',
                           style: const TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.bold,
@@ -1050,9 +1028,9 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
                           ),
                         ),
                         const SizedBox(height: 2),
-                        Text(
-                          'TIME REMAINING: 01H 42M', // Placeholder or use _formatMinutes if restored
-                          style: const TextStyle(
+                        const Text(
+                          'Book before cutoff time',
+                          style: TextStyle(
                             fontSize: 11,
                             fontWeight: FontWeight.w700,
                             color: Color(0xFFA67C52),
@@ -1106,25 +1084,30 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
                         ),
                       ),
                     ),
-                  _buildStatusBadge(
-                    isBooked,
-                    isSkipped,
-                    isCancelled,
-                    isRebooking,
-                  ),
                 ],
               ),
             ],
           ),
           const SizedBox(height: 12),
-          Text(
-            _menuTitles[index],
-            style: const TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.w700,
-              color: AppColors.textDark,
-              letterSpacing: -0.5,
-            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                _menuTitles[index],
+                style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textDark,
+                  letterSpacing: -0.5,
+                ),
+              ),
+              _buildStatusIcon(
+                isBooked,
+                isSkipped,
+                isCancelled,
+                isRebooking,
+              ),
+            ],
           ),
           const SizedBox(height: 16),
 
@@ -1141,12 +1124,11 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
             ...items.asMap().entries.map((e) {
               bool disabled = !isActive;
               bool forceSelected = false;
-              if (!isActive) {
-                final names = _bookedItemsList[index] ?? [];
-                forceSelected = names.contains(e.value['name']);
+              if (!isActive && isBooked) {
+                forceSelected = (_selectedItems[index] ?? {}).contains(e.key);
               }
 
-              if (disabled && !forceSelected) return const SizedBox.shrink();
+              if (disabled && !forceSelected && !isSkipped) return const SizedBox.shrink();
 
               return _buildFoodItem(
                 index,
@@ -1185,80 +1167,37 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
     );
   }
 
-  Widget _buildStatusBadge(
+  Widget _buildStatusIcon(
     bool isBooked,
     bool isSkipped,
     bool isCancelled,
     bool isRebooking,
   ) {
     if (isRebooking || (!isBooked && !isSkipped && !isCancelled)) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: AppColors.primary.withValues(alpha: 0.1),
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: const Text(
-          'PENDING',
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.bold,
-            color: AppColors.primary,
-          ),
-        ),
-      );
+      return const SizedBox.shrink(); // No icon, Selection UI active
     }
 
     if (isCancelled) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: const Color(0xFFFFEBEE),
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: const Text(
-          'CANCELLED',
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.bold,
-            color: Colors.red,
-          ),
-        ),
+      return const Icon(
+        Icons.cancel,
+        size: 28,
+        color: Colors.red,
       );
     }
 
     if (isSkipped) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: const Color(0xFFF3F4F6),
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: const Text(
-          'SKIPPED',
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.bold,
-            color: AppColors.textMuted,
-          ),
-        ),
+      return const Icon(
+        Icons.skip_next,
+        size: 28,
+        color: Colors.orange,
       );
     }
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: const Color(0xFFE8F5E9),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: const Text(
-        'BOOKED',
-        style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.bold,
-          color: AppColors.success,
-        ),
-      ),
+    // Confirmed state
+    return const Icon(
+      Icons.check_circle,
+      size: 28,
+      color: Colors.green,
     );
   }
 
@@ -1521,7 +1460,6 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
   }
 
   void _showCancelDialog(int index) {
-    final dateKey = _formatDateKey(_selectedDate);
     final mealName = _mealTabs[index];
     final mealTime = _mealTimes[index];
     final bookedItems = _bookedItemsList[index] ?? [];
@@ -1759,20 +1697,19 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
                     child: ElevatedButton(
                       onPressed: () async {
                         Navigator.pop(ctx);
-                        final prefs = await SharedPreferences.getInstance();
-                        await prefs.remove(
-                          'booked_${dateKey}_${mealName.toLowerCase()}',
-                        );
-                        await prefs.remove(
-                          'items_${dateKey}_${mealName.toLowerCase()}',
-                        );
+                        
                         setState(() {
-                          _isRebooking[index] = false;
-                          _bookedMeals[index] = false;
-                          _cancelledMeals[index] = false;
-                          _bookedItemsList[index] = [];
-                          _selectedItems[index] = {0};
+                          slotStatus[index] = 'cancelled';
                         });
+
+                        final bookingId = _existingBookingIds[index];
+                        if (bookingId != null) {
+                          try {
+                            await ApiService.cancelBooking(bookingId);
+                          } catch (e) {
+                            debugPrint('Cancel booking error: $e');
+                          }
+                        }
                         MealStateProvider.instance.notifyStateChanged();
                       },
                       style: ElevatedButton.styleFrom(
@@ -1802,7 +1739,6 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
   }
 
   void _showUndoSkipDialog(int index) {
-    final dateKey = _formatDateKey(_selectedDate);
     final mealName = _mealTabs[index];
     showModalBottomSheet(
       context: context,
@@ -1883,14 +1819,34 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
                       child: ElevatedButton(
                         onPressed: () async {
                           Navigator.pop(ctx);
-                          final prefs = await SharedPreferences.getInstance();
-                          await prefs.remove(
-                            'skipped_${dateKey}_${mealName.toLowerCase()}',
-                          );
-                          await prefs.remove(
-                            'skipReason_${dateKey}_${mealName.toLowerCase()}',
-                          );
-                          MealStateProvider.instance.notifyStateChanged();
+                          
+                          final bookingId = _existingBookingIds[index];
+                          if (bookingId != null) {
+                            try {
+                              final response = await ApiService.undoSkipBooking(bookingId);
+                              if (response.statusCode == 200) {
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(content: Text('Skip undone successfully'), backgroundColor: AppColors.primary),
+                                  );
+                                  _loadStateForDate();
+                                  MealStateProvider.instance.notifyStateChanged();
+                                }
+                              } else {
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(content: Text('Failed to undo skip'), backgroundColor: Colors.red),
+                                  );
+                                }
+                              }
+                            } catch (e) {
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('Error: ${e.toString()}'), backgroundColor: Colors.red),
+                                );
+                              }
+                            }
+                          }
                         },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.transparent,
@@ -2053,10 +2009,12 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
                 ],
               ),
             ),
-            const SizedBox(width: 12),
-            isRadio
-                ? _buildRadioIndicator(isSelected, disabled)
-                : _buildCheckboxIndicator(isSelected, disabled),
+            if (!disabled) ...[
+              const SizedBox(width: 12),
+              isRadio
+                  ? _buildRadioIndicator(isSelected, disabled)
+                  : _buildCheckboxIndicator(isSelected, disabled),
+            ],
           ],
         ),
       ),

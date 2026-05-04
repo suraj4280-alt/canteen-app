@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'app_colors.dart';
-import 'auth_service.dart';
+import 'services/api_service.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -13,7 +12,9 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   int _mealsBooked = 0;
   int _mealsSkipped = 0;
-  int _daysActiveThisMonth = 0;
+  int _mealsConsumed = 0;
+  int _mealsMissed = 0;
+  bool _isLoadingStats = true;
   Map<String, dynamic>? _currentUser;
 
   @override
@@ -24,59 +25,41 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _loadCurrentUser() async {
-    final user = await AuthService.getCurrentUser();
-    if (mounted) {
-      setState(() => _currentUser = user);
+    try {
+      final user = await ApiService.getCurrentUser();
+      if (mounted) {
+        setState(() => _currentUser = user);
+      }
+    } catch (_) {
+      // User cache will be used if available
     }
   }
 
   Future<void> _loadStats() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final keys = prefs.getKeys();
-
-      int booked = 0;
-      int skipped = 0;
-
-      final now = DateTime.now();
-      final currentMonthStr =
-          '${now.year}-${now.month.toString().padLeft(2, '0')}';
-      Set<String> activeDaysThisMonth = {};
-
-      for (final key in keys) {
-        if (key.startsWith('booked_')) {
-          if (prefs.getString(key) == 'true') {
-            booked++;
-            final parts = key.split('_');
-            if (parts.length >= 2) {
-              final datePart = parts[1];
-              if (datePart.startsWith(currentMonthStr)) {
-                activeDaysThisMonth.add(datePart);
-              }
-            }
-          }
-        } else if (key.startsWith('skipped_')) {
-          if (prefs.getString(key) == 'true') {
-            skipped++;
-            final parts = key.split('_');
-            if (parts.length >= 2) {
-              final datePart = parts[1];
-              if (datePart.startsWith(currentMonthStr)) {
-                activeDaysThisMonth.add(datePart);
-              }
-            }
-          }
-        }
-      }
-
+      final stats = await ApiService.getBookingStats();
       if (mounted) {
         setState(() {
-          _mealsBooked = booked;
-          _mealsSkipped = skipped;
-          _daysActiveThisMonth = activeDaysThisMonth.length;
+          _mealsBooked = stats['total_bookings'] as int? ?? 0;
+          _mealsSkipped = stats['skipped'] as int? ?? 0;
+          _mealsConsumed = stats['consumed'] as int? ?? 0;
+          _mealsMissed = stats['missed'] as int? ?? 0;
+          _isLoadingStats = false;
         });
       }
-    } catch (_) {}
+    } catch (_) {
+      if (mounted) {
+        setState(() => _isLoadingStats = false);
+      }
+    }
+  }
+
+  Future<void> _handleRefresh() async {
+    setState(() => _isLoadingStats = true);
+    await Future.wait([
+      _loadStats(),
+      _loadCurrentUser(),
+    ]);
   }
 
   @override
@@ -87,20 +70,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
         children: [
           _buildTopBar(),
           Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.only(bottom: 100),
-              child: Column(
-                children: [
-                  _buildProfileHeader(),
-                  const SizedBox(height: 20),
-                  _buildInfoSections(),
-                  const SizedBox(height: 4),
-                  _buildQuickStats(),
-                  const SizedBox(height: 20),
-                  _buildSettingsList(),
-                  const SizedBox(height: 32),
-                  _buildLogoutButton(),
-                ],
+            child: RefreshIndicator(
+              color: AppColors.primary,
+              onRefresh: _handleRefresh,
+              child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.only(bottom: 100),
+                child: Column(
+                  children: [
+                    _buildProfileHeader(),
+                    const SizedBox(height: 20),
+                    _buildInfoSections(),
+                    const SizedBox(height: 4),
+                    _buildQuickStats(),
+                    const SizedBox(height: 20),
+                    _buildSettingsList(),
+                    const SizedBox(height: 32),
+                    _buildLogoutButton(),
+                  ],
+                ),
               ),
             ),
           ),
@@ -356,32 +344,59 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Widget _buildQuickStats() {
+    if (_isLoadingStats) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+        child: Center(
+          child: SizedBox(
+            width: 20, height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+          ),
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24),
-      child: Row(
+      child: Column(
         children: [
-          Expanded(
-            child: _buildStatChip(
-              '🍽️',
-              'Meals Booked',
-              _mealsBooked.toString(),
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: _buildStatChip(
+                  '🍽️',
+                  'Booked',
+                  _mealsBooked.toString(),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildStatChip(
+                  '✅',
+                  'Consumed',
+                  _mealsConsumed.toString(),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: _buildStatChip(
-              '⏭️',
-              'Meals Skipped',
-              _mealsSkipped.toString(),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: _buildStatChip(
-              '✅',
-              'This Month',
-              '$_daysActiveThisMonth days',
-            ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _buildStatChip(
+                  '⏭️',
+                  'Skipped',
+                  _mealsSkipped.toString(),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildStatChip(
+                  '⚠️',
+                  'Missed',
+                  _mealsMissed.toString(),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -523,7 +538,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         height: 56,
         child: ElevatedButton(
           onPressed: () async {
-            await AuthService.logout();
+            await ApiService.logout();
             if (mounted) {
               Navigator.pushNamedAndRemoveUntil(
                 context,

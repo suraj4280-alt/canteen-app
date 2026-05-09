@@ -16,7 +16,7 @@ class MealBookingScreen extends StatefulWidget {
 class _MealBookingScreenState extends State<MealBookingScreen> {
   late DateTime _selectedDate;
   int _selectedMeal = 0;
-  final Map<int, bool> _isRebooking = {0: false, 1: false, 2: false, 3: false};
+  final Map<int, bool> _isRebooking = {};
   final Map<int, List<String>> _bookedItemsList = {};
   final Map<int, String> slotStatus = {};
 
@@ -25,6 +25,7 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
   List<String> _mealTabs = [];
   List<int> _slotIds = []; // Real DB slot IDs
   Map<int, int?> _existingBookingIds = {}; // Tab index → booking ID (for skip)
+  Map<String, String> _slotCutoffData = {}; // Slot name → raw cutoff time string from API
 
   final Map<int, Set<int>> _selectedItems = {};
 
@@ -52,8 +53,11 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
   }
 
   /// Tasks 9, 10, 11: Load slot metadata from API once
+  bool _slotsError = false;
+
   Future<void> _loadSlots() async {
     try {
+      _slotsError = false;
       final slots = await ApiService.getMeals();
       if (mounted && slots.isNotEmpty) {
         setState(() {
@@ -71,25 +75,25 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
             }
             return cutoff;
           }).toList();
-          // Initialize selection sets for each slot
+          // Store raw cutoff data for _isCutoffPassed
+          _slotCutoffData = Map.fromIterables(
+            _mealTabs,
+            slots.map((s) => s['booking_cutoff_time']?.toString() ?? ''),
+          );
+          // Initialize dynamic arrays to match slot count
+          _allMenuItems = List.generate(_mealTabs.length, (_) => <Map<String, dynamic>>[]);
+          // Initialize dynamic maps to match slot count
           for (int i = 0; i < _mealTabs.length; i++) {
             _selectedItems.putIfAbsent(i, () => {0});
+            _isRebooking.putIfAbsent(i, () => false);
           }
         });
         _loadStateForDate();
       }
-    } catch (_) {
-      // Fallback to hardcoded if API fails
+    } catch (e) {
+      debugPrint('Failed to load meal slots: $e');
       if (mounted) {
-        setState(() {
-          _mealTabs = ['Breakfast', 'Lunch', 'Snacks', 'Dinner'];
-          _slotIds = [1, 2, 3, 4];
-          _mealTimes = ['7:30 AM', '12:00 PM', '4:30 PM', '8:00 PM'];
-          for (int i = 0; i < 4; i++) {
-            _selectedItems.putIfAbsent(i, () => {0});
-          }
-        });
-        _loadStateForDate();
+        setState(() => _slotsError = true);
       }
     }
   }
@@ -201,17 +205,20 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
 
 
 
-  // ── Per-tab menu titles ──
-  final List<String> _menuTitles = [
-    'Morning Breakfast Menu',
-    'Organic Lunch Menu',
-    'Evening Snacks Menu',
-    'Wholesome Dinner Menu',
-  ];
+  // ── Per-tab menu titles (dynamically generated from slot names) ──
+  List<String> get _menuTitles => _mealTabs.map((name) {
+    switch (name.toLowerCase()) {
+      case 'breakfast': return 'Morning Breakfast Menu';
+      case 'lunch': return 'Organic Lunch Menu';
+      case 'snacks': return 'Evening Snacks Menu';
+      case 'dinner': return 'Wholesome Dinner Menu';
+      default: return '$name Menu';
+    }
+  }).toList();
 
-  // ── Menu items per tab ──
+  // ── Menu items per tab (dynamically sized) ──
   // Items with 'exclusive' key share a radio group — only one can be selected.
-  final List<List<Map<String, dynamic>>> _allMenuItems = [[], [], [], []];
+  List<List<Map<String, dynamic>>> _allMenuItems = [];
   bool _isLoadingMenu = false;
 
   Future<void> _loadMenuForDate() async {
@@ -583,17 +590,51 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
         children: [
           _buildTopBar(),
           Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.only(bottom: 100),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildBookingHeader(),
-                  _buildMealTabs(),
-                  _buildSlotCard(_selectedMeal),
-                ],
-              ),
-            ),
+            child: _slotsError
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(32),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.cloud_off, size: 48, color: AppColors.textMuted),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'Could not load meal slots',
+                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.textDark),
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Please check your connection and try again.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 14, color: AppColors.textMuted),
+                          ),
+                          const SizedBox(height: 24),
+                          ElevatedButton.icon(
+                            onPressed: _loadSlots,
+                            icon: const Icon(Icons.refresh, color: Colors.white),
+                            label: const Text('Retry', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.primary,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+                              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                : SingleChildScrollView(
+                    padding: const EdgeInsets.only(bottom: 100),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildBookingHeader(),
+                        _buildMealTabs(),
+                        _buildSlotCard(_selectedMeal),
+                      ],
+                    ),
+                  ),
           ),
         ],
       ),
@@ -1424,36 +1465,24 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
         return false;
       }
 
-      int cutoffHour;
-      int cutoffMinute = 0;
-      switch (mealType.toLowerCase()) {
-        case 'breakfast':
-          cutoffHour = 7;
-          cutoffMinute = 30;
-          break;
-        case 'lunch':
-          cutoffHour = 12;
-          cutoffMinute = 0;
-          break;
-        case 'snacks':
-          cutoffHour = 16;
-          cutoffMinute = 30;
-          break;
-        case 'dinner':
-          cutoffHour = 20;
-          cutoffMinute = 0;
-          break;
-        default:
-          cutoffHour = 0;
+      // Use API cutoff times from loaded slot data
+      final cutoffStr = _slotCutoffData[mealType] ?? '';
+      if (cutoffStr.length >= 5) {
+        final parts = cutoffStr.split(':');
+        final cutoffHour = int.tryParse(parts[0]) ?? 0;
+        final cutoffMinute = parts.length > 1 ? (int.tryParse(parts[1]) ?? 0) : 0;
+        final cutoffTime = DateTime(
+          now.year,
+          now.month,
+          now.day,
+          cutoffHour,
+          cutoffMinute,
+        );
+        return now.isAfter(cutoffTime);
       }
-      final cutoffTime = DateTime(
-        now.year,
-        now.month,
-        now.day,
-        cutoffHour,
-        cutoffMinute,
-      );
-      return now.isAfter(cutoffTime);
+
+      // Fallback if no API data available
+      return false;
     } catch (_) {
       return true;
     }

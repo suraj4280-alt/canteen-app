@@ -140,14 +140,9 @@ class _HomeScreenState extends State<HomeScreen> {
           }
         }
       }
-      return null;
     }
 
-    // Fallback: hardcoded values matching DB seed data
-    if (totalMinutes >= 450 && totalMinutes <= 600) return 'Breakfast';  // 07:30-10:00
-    if (totalMinutes >= 735 && totalMinutes <= 870) return 'Lunch';      // 12:15-14:30
-    if (totalMinutes >= 990 && totalMinutes <= 1080) return 'Snacks';    // 16:30-18:00
-    if (totalMinutes >= 1170 && totalMinutes <= 1350) return 'Dinner';   // 19:30-22:30
+    // Meals not loaded yet or no active slot — return null
     return null;
   }
 

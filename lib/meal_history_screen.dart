@@ -40,6 +40,7 @@ class MealHistoryScreen extends StatefulWidget {
 class _MealHistoryScreenState extends State<MealHistoryScreen> {
   bool _isLoading = true;
   List<MealHistoryEntry> _allEntries = [];
+  Map<String, String> _slotCutoffData = {}; // Slot name → raw cutoff time from API
   String _activeFilter = 'All';
   final List<String> _filters = [
     'All',
@@ -62,8 +63,25 @@ class _MealHistoryScreenState extends State<MealHistoryScreen> {
   @override
   void initState() {
     super.initState();
+    _loadSlotCutoffs();
     _loadHistory();
     MealStateProvider.instance.addListener(_onStateChanged);
+  }
+
+  Future<void> _loadSlotCutoffs() async {
+    try {
+      final slots = await ApiService.getMeals();
+      if (mounted && slots.isNotEmpty) {
+        setState(() {
+          _slotCutoffData = Map.fromIterables(
+            slots.map((s) => s['name']?.toString() ?? ''),
+            slots.map((s) => s['booking_cutoff_time']?.toString() ?? ''),
+          );
+        });
+      }
+    } catch (_) {
+      // Fallback: leave empty, _isCutoffPassed will return true for past dates
+    }
   }
 
   void _onStateChanged() {
@@ -185,33 +203,24 @@ class _MealHistoryScreenState extends State<MealHistoryScreen> {
         return false;
       }
 
-      int cutoffHour;
-      int cutoffMinute = 0;
-      switch (mealType.toLowerCase()) {
-        case 'breakfast':
-          cutoffHour = 7;
-          break;
-        case 'lunch':
-          cutoffHour = 11;
-          cutoffMinute = 30;
-          break;
-        case 'snacks':
-          cutoffHour = 16;
-          break;
-        case 'dinner':
-          cutoffHour = 18;
-          break;
-        default:
-          cutoffHour = 0;
+      // Use API cutoff times from loaded slot data
+      final cutoffStr = _slotCutoffData[mealType] ?? '';
+      if (cutoffStr.length >= 5) {
+        final timeParts = cutoffStr.split(':');
+        final cutoffHour = int.tryParse(timeParts[0]) ?? 0;
+        final cutoffMinute = timeParts.length > 1 ? (int.tryParse(timeParts[1]) ?? 0) : 0;
+        final cutoffTime = DateTime(
+          now.year,
+          now.month,
+          now.day,
+          cutoffHour,
+          cutoffMinute,
+        );
+        return now.isAfter(cutoffTime);
       }
-      final cutoffTime = DateTime(
-        now.year,
-        now.month,
-        now.day,
-        cutoffHour,
-        cutoffMinute,
-      );
-      return now.isAfter(cutoffTime);
+
+      // Fallback: if no API data, assume cutoff passed for safety
+      return true;
     } catch (_) {
       return true;
     }

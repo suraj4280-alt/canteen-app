@@ -203,10 +203,19 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     final error = await ApiService.register(
       firstName: capitalize(fn),
       lastName: capitalize(ln),
+      middleName: _middleNameController.text.trim().isNotEmpty
+          ? capitalize(_middleNameController.text.trim())
+          : null,
       email: email,
       uid: uid,
       hostel: _selectedHostel!,
       password: _passwordController.text,
+      phone: _phoneController.text.trim().isNotEmpty
+          ? _phoneController.text.trim()
+          : null,
+      roomNumber: _roomController.text.trim().isNotEmpty
+          ? _roomController.text.trim()
+          : null,
     );
 
     setState(() => _isLoading = false);

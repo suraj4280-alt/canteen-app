@@ -158,20 +158,34 @@ class ApiService {
     required String uid,
     required String hostel,
     required String password,
+    String? middleName,
+    String? phone,
+    String? roomNumber,
   }) async {
     final url = Uri.parse('$baseUrl/api/auth/register');
     try {
+      final body = <String, dynamic>{
+        'first_name': firstName,
+        'last_name': lastName,
+        'email': email,
+        'uid': uid,
+        'hostel': hostel,
+        'password': password,
+      };
+      if (middleName != null && middleName.isNotEmpty) {
+        body['middle_name'] = middleName;
+      }
+      if (phone != null && phone.isNotEmpty) {
+        body['phone'] = phone;
+      }
+      if (roomNumber != null && roomNumber.isNotEmpty) {
+        body['room_number'] = roomNumber;
+      }
+
       final response = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'first_name': firstName,
-          'last_name': lastName,
-          'email': email,
-          'uid': uid,
-          'hostel': hostel,
-          'password': password,
-        }),
+        body: jsonEncode(body),
       ).timeout(_timeout);
 
       if (response.statusCode == 201) {
@@ -403,23 +417,58 @@ class ApiService {
     required int serviceRating,
     required int cleanlinessRating,
     String? comment,
+    List<int>? tagIds,
   }) async {
+    final body = <String, dynamic>{
+      'booking_id': bookingId,
+      'food_rating': foodRating,
+      'service_rating': serviceRating,
+      'cleanliness_rating': cleanlinessRating,
+    };
+    if (comment != null && comment.isNotEmpty) body['comment'] = comment;
+    if (tagIds != null && tagIds.isNotEmpty) body['tag_ids'] = tagIds;
     return await _withRetry(() => http.post(
       Uri.parse('$baseUrl/api/feedback'),
       headers: getHeaders(),
-      body: jsonEncode({
-        'booking_id': bookingId,
-        'food_rating': foodRating,
-        'service_rating': serviceRating,
-        'cleanliness_rating': cleanlinessRating,
-        'comment': comment,
-      }),
+      body: jsonEncode(body),
     ));
   }
 
   static Future<List<dynamic>> getFeedback() async {
     final response = await _withRetry(() => http.get(
       Uri.parse('$baseUrl/api/feedback'),
+      headers: getHeaders(),
+    ));
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as List<dynamic>;
+    } else {
+      throw Exception(_extractError(response));
+    }
+  }
+
+  // ── Profile Update ────────────────────────────────────────────────────────
+
+  static Future<http.Response> updateProfile({
+    String? phone,
+    String? roomNumber,
+    String? dietaryPreference,
+  }) async {
+    final body = <String, dynamic>{};
+    if (phone != null) body['phone'] = phone;
+    if (roomNumber != null) body['room_number'] = roomNumber;
+    if (dietaryPreference != null) body['dietary_preference'] = dietaryPreference;
+    return await _withRetry(() => http.put(
+      Uri.parse('$baseUrl/api/auth/profile'),
+      headers: getHeaders(),
+      body: jsonEncode(body),
+    ));
+  }
+
+  // ── Feedback Tags ─────────────────────────────────────────────────────────
+
+  static Future<List<dynamic>> getFeedbackTags() async {
+    final response = await _withRetry(() => http.get(
+      Uri.parse('$baseUrl/api/feedback/tags'),
       headers: getHeaders(),
     ));
     if (response.statusCode == 200) {

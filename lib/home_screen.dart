@@ -4,6 +4,7 @@ import 'dart:async';
 import 'app_colors.dart';
 import 'services/api_service.dart';
 import 'meal_state.dart';
+import 'meal_pass_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -59,7 +60,9 @@ class _HomeScreenState extends State<HomeScreen> {
             _activeBooking = {
               'meal': booking['slot_name']?.toString() ?? 'Meal',
               'isTomorrow': false,
+              'date': booking['date']?.toString() ?? '',
               'orderId': booking['order_id']?.toString() ?? '',
+              'status': booking['status_name']?.toString() ?? '',
               'items': <String>[booking['slot_name']?.toString() ?? 'Meal'],
               'bookingId': booking['id'],
             };
@@ -168,17 +171,17 @@ class _HomeScreenState extends State<HomeScreen> {
 
     // Use dynamic slot data from API if available
     if (_meals.isNotEmpty) {
-      // Find the current active slot
+      // Find the current active meal slot (serving time)
       for (final slot in _meals) {
         final startMin = _timeToMinutes(slot['start_time'].toString());
         final endMin = _timeToMinutes(slot['end_time'].toString());
         if (totalMinutes >= startMin && totalMinutes <= endMin) {
-          phase = slot['name'] ?? 'Unknown';
+          phase = '${slot['name']} (In Progress)';
           break;
         }
       }
 
-      // If no active slot, find the next upcoming one
+      // If no active meal slot, find the next upcoming one
       if (phase == 'Unknown') {
         for (final slot in _meals) {
           final startMin = _timeToMinutes(slot['start_time'].toString());
@@ -192,27 +195,57 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
 
-      // Find next booking cutoff
+      // Find next open booking window
+      // Check same-day windows (offset=0)
       for (final slot in _meals) {
-        final cutoffStr = slot['booking_cutoff_time']?.toString();
-        if (cutoffStr == null) continue;
-        final cutoffMin = _timeToMinutes(cutoffStr);
-        if (totalMinutes < cutoffMin) {
-          final diffMin = cutoffMin - totalMinutes;
-          final dh = diffMin ~/ 60;
-          final dm = diffMin % 60;
-          countdown = "${slot['name']} booking closes in ${dh}h ${dm}m";
-          break;
+        final offset = slot['booking_open_day_offset'] ?? 0;
+        final openStr = slot['booking_open_time']?.toString();
+        final closeStr = slot['booking_cutoff_time']?.toString();
+        if (openStr == null || closeStr == null) continue;
+        
+        final openMin = _timeToMinutes(openStr);
+        final closeMin = _timeToMinutes(closeStr);
+        
+        if (offset == 0) {
+          // Same-day window for today's meal
+          if (totalMinutes >= openMin && totalMinutes < closeMin) {
+            final diffMin = closeMin - totalMinutes;
+            final dh = diffMin ~/ 60;
+            final dm = diffMin % 60;
+            countdown = "${slot['name']} booking closes in ${dh}h ${dm}m";
+            break;
+          } else if (totalMinutes < openMin) {
+            final diffMin = openMin - totalMinutes;
+            final dh = diffMin ~/ 60;
+            final dm = diffMin % 60;
+            countdown = "${slot['name']} booking opens in ${dh}h ${dm}m";
+            break;
+          }
+        } else if (offset == -1) {
+          // Prev-day window: this is for tomorrow's meal, opens today evening
+          if (totalMinutes >= openMin && totalMinutes < closeMin) {
+            final diffMin = closeMin - totalMinutes;
+            final dh = diffMin ~/ 60;
+            final dm = diffMin % 60;
+            countdown = "Tomorrow's ${slot['name']} booking closes in ${dh}h ${dm}m";
+            break;
+          } else if (totalMinutes < openMin) {
+            final diffMin = openMin - totalMinutes;
+            final dh = diffMin ~/ 60;
+            final dm = diffMin % 60;
+            countdown = "Tomorrow's ${slot['name']} booking opens in ${dh}h ${dm}m";
+            break;
+          }
         }
       }
       if (countdown.isEmpty) {
-        countdown = "Booking closed for today";
+        countdown = "All booking windows closed for today";
       }
     }
 
     if (mounted) {
       setState(() {
-        _currentPhase = phase.replaceAll(' (upcoming)', '');
+        _currentPhase = phase.replaceAll(' (upcoming)', '').replaceAll(' (In Progress)', '');
         _countdownString = countdown;
       });
     }
@@ -610,7 +643,22 @@ class _HomeScreenState extends State<HomeScreen> {
                 borderRadius: BorderRadius.circular(999),
               ),
               child: ElevatedButton(
-                onPressed: () => Navigator.pushNamed(context, '/meal-pass'),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => MealPassScreen(
+                        bookingId: _activeBooking!['bookingId'] as int?,
+                        orderID: _activeBooking!['orderId'] as String?,
+                        bookedDate: _activeBooking!['date'] as String?,
+                        location: 'Hostel ${ApiService.currentUser?['hostel'] ?? '---'}',
+                        bookedSlots: [_activeBooking!['meal'] as String],
+                        slotItems: {_activeBooking!['meal'] as String: _activeBooking!['items'] as List<String>},
+                        isCompleted: _activeBooking!['status'] == 'used',
+                      ),
+                    ),
+                  );
+                },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.transparent,
                   shadowColor: Colors.transparent,
@@ -826,7 +874,26 @@ class _HomeScreenState extends State<HomeScreen> {
               onTap: () {
                 setState(() => _currentTab = i);
                 if (i == 1) Navigator.pushNamed(context, '/meal-booking');
-                if (i == 2) Navigator.pushNamed(context, '/meal-pass');
+                if (i == 2) {
+                  if (_hasActiveBooking && _activeBooking != null) {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => MealPassScreen(
+                        bookingId: _activeBooking!['bookingId'] as int?,
+                        orderID: _activeBooking!['orderId'] as String?,
+                        bookedDate: _activeBooking!['date'] as String?,
+                        location: 'Hostel ${ApiService.currentUser?['hostel'] ?? '---'}',
+                        bookedSlots: [_activeBooking!['meal'] as String],
+                        slotItems: {_activeBooking!['meal'] as String: _activeBooking!['items'] as List<String>},
+                        isCompleted: _activeBooking!['status'] == 'used',
+                      ),
+                      ),
+                    );
+                  } else {
+                    Navigator.pushNamed(context, '/meal-pass');
+                  }
+                }
                 if (i == 3) Navigator.pushNamed(context, '/history');
                 if (i == 4) Navigator.pushNamed(context, '/profile');
               },

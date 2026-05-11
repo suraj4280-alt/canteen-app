@@ -715,7 +715,7 @@ class _MealHistoryScreenState extends State<MealHistoryScreen> {
 
     return GestureDetector(
       onTap: () {
-        if (!isBooked) return;
+        if (!isBooked && entry.status != 'COMPLETED') return;
         Navigator.push(
           context,
           MaterialPageRoute(
@@ -733,6 +733,7 @@ class _MealHistoryScreenState extends State<MealHistoryScreen> {
                 location: 'Hostel ${user?['hostel'] ?? '---'}',
                 bookedSlots: [entry.rawMealType],
                 slotItems: {entry.rawMealType: entry.rawItemsList},
+                isCompleted: entry.status == 'COMPLETED',
               );
             },
           ),

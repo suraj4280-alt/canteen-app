@@ -5,6 +5,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'app_colors.dart';
 import 'services/api_service.dart';
 
+import 'feedback_screen.dart';
 
 class MealPassScreen extends StatefulWidget {
   final String? studentName;
@@ -15,6 +16,7 @@ class MealPassScreen extends StatefulWidget {
   final String? location;
   final List<String>? bookedSlots;
   final Map<String, List<String>>? slotItems;
+  final bool isCompleted;
 
   const MealPassScreen({
     super.key,
@@ -26,6 +28,7 @@ class MealPassScreen extends StatefulWidget {
     this.location,
     this.bookedSlots,
     this.slotItems,
+    this.isCompleted = false,
   });
 
   @override
@@ -52,9 +55,9 @@ class _MealPassScreenState extends State<MealPassScreen> {
   }
 
   Future<void> _fetchQrData() async {
-    int? bookingId = widget.bookingId;
-    if (bookingId == null && widget.orderID != null) {
-      bookingId = int.tryParse(widget.orderID!.replaceAll(RegExp(r'[^0-9]'), ''));
+    int? bookingId = _localBookingId;
+    if (bookingId == null && _localOrderId != null) {
+      bookingId = int.tryParse(_localOrderId!.replaceAll(RegExp(r'[^0-9]'), ''));
     }
     if (bookingId == null || bookingId == 0) {
       if (mounted) {
@@ -100,6 +103,14 @@ class _MealPassScreenState extends State<MealPassScreen> {
     super.dispose();
   }
 
+  int? _localBookingId;
+  String? _localDate;
+  String? _localLocation;
+  String? _localOrderId;
+  String? _localMealName;
+  List<String>? _localItems;
+  bool _localIsCompleted = false;
+
   Future<void> _loadData() async {
     final user = ApiService.currentUser;
     final fn = user?['firstName']?.toString() ?? '';
@@ -108,10 +119,83 @@ class _MealPassScreenState extends State<MealPassScreen> {
     _studentName = '$fn $ln'.trim();
     if (_studentName.isEmpty) _studentName = widget.studentName ?? 'Student';
 
+    // If we have explicit widget parameters, use them
+    _localBookingId = widget.bookingId;
+    _localDate = widget.bookedDate;
+    _localLocation = widget.location;
+    _localOrderId = widget.orderID;
+    _localIsCompleted = widget.isCompleted;
+    if (widget.bookedSlots != null && widget.bookedSlots!.isNotEmpty) {
+      _localMealName = widget.bookedSlots!.first;
+      if (widget.slotItems != null && widget.slotItems!.containsKey(_localMealName)) {
+        _localItems = widget.slotItems![_localMealName];
+      }
+    }
+
+    // If no booking ID was provided (e.g. pushed from generic navbar), fetch the active one
+    if (_localBookingId == null) {
+      try {
+        final upcoming = await ApiService.getUpcomingBookings();
+        if (upcoming.isNotEmpty) {
+          final todayStr = DateTime.now().toIso8601String().substring(0, 10);
+          
+          // Helper to find current slot
+          final now = DateTime.now();
+          final totalMinutes = now.hour * 60 + now.minute;
+          String? activeSlotName;
+          
+          // First pass: look for exact current time match
+          for (final b in upcoming) {
+            final startStr = b['start_time']?.toString() ?? '';
+            final endStr = b['end_time']?.toString() ?? '';
+            if (startStr.length >= 5 && endStr.length >= 5) {
+              final start = int.parse(startStr.split(':')[0]) * 60 + int.parse(startStr.split(':')[1]);
+              final end = int.parse(endStr.split(':')[0]) * 60 + int.parse(endStr.split(':')[1]);
+              if (totalMinutes >= start && totalMinutes <= end && b['date']?.toString() == todayStr) {
+                activeSlotName = b['slot_name']?.toString();
+                break;
+              }
+            }
+          }
+          
+          // Second pass: just grab the very next upcoming meal today
+          if (activeSlotName == null) {
+             for (final b in upcoming) {
+                if (b['date']?.toString() == todayStr) {
+                   activeSlotName = b['slot_name']?.toString();
+                   break;
+                }
+             }
+          }
+
+          // Pick the active or first upcoming booking
+          Map<String, dynamic>? targetBooking;
+          for (final b in upcoming) {
+            if (b['date']?.toString() == todayStr && b['slot_name']?.toString() == activeSlotName) {
+              targetBooking = b;
+              break;
+            }
+          }
+
+          if (targetBooking != null) {
+            _localBookingId = targetBooking['id'] as int?;
+            _localDate = targetBooking['date']?.toString();
+            _localLocation = 'Hostel ${user?['hostel'] ?? '---'}';
+            _localOrderId = targetBooking['order_id']?.toString();
+            _localMealName = targetBooking['slot_name']?.toString();
+            _localItems = [targetBooking['slot_name']?.toString() ?? 'Meal'];
+            _localIsCompleted = targetBooking['status_name']?.toString() == 'used';
+          }
+        }
+      } catch (_) {}
+    }
+
     if (mounted) {
       setState(() {
         _isLoading = false;
       });
+      // Now fetch the QR data with our resolved ID
+      _fetchQrData();
     }
   }
 
@@ -296,25 +380,41 @@ class _MealPassScreenState extends State<MealPassScreen> {
                   child: SizedBox(
                     width: 180,
                     height: 180,
-                  child: _isLoadingQr
-                      ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
-                      : _qrError != null
-                          ? Center(
-                              child: Text(
-                                _qrError!,
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(
-                                  color: Colors.red,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14,
-                                ),
+                  child: _localIsCompleted
+                      ? Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: const [
+                            Icon(Icons.check_circle_outline, color: AppColors.success, size: 64),
+                            SizedBox(height: 12),
+                            Text(
+                              'QR Scanned',
+                              style: TextStyle(
+                                color: AppColors.success,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
                               ),
-                            )
-                          : QrImageView(
-                              data: _qrPayload ?? '',
-                              version: QrVersions.auto,
-                              backgroundColor: Colors.white,
                             ),
+                          ],
+                        )
+                      : _isLoadingQr
+                          ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+                          : _qrError != null
+                              ? Center(
+                                  child: Text(
+                                    _qrError!,
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      color: Colors.red,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                )
+                              : QrImageView(
+                                  data: _qrPayload ?? '',
+                                  version: QrVersions.auto,
+                                  backgroundColor: Colors.white,
+                                ),
                   ),
                 ),
                 const SizedBox(height: 20),
@@ -338,9 +438,9 @@ class _MealPassScreenState extends State<MealPassScreen> {
                 ),
                 const SizedBox(height: 16),
                 // Show at counter
-                const Text(
-                  'Show this QR at the mess counter',
-                  style: TextStyle(
+                Text(
+                  _localIsCompleted ? 'Meal has been successfully collected' : 'Show this QR at the mess counter',
+                  style: const TextStyle(
                     fontSize: 13,
                     color: Colors.white70,
                     fontWeight: FontWeight.w500,
@@ -355,10 +455,10 @@ class _MealPassScreenState extends State<MealPassScreen> {
   }
 
   Widget _buildMealDetails() {
-    final mealName = widget.bookedSlots?.isNotEmpty == true ? widget.bookedSlots!.first : 'Meal';
-    final dateStr = widget.bookedDate ?? '---';
-    final locationStr = widget.location ?? '---';
-    final itemsList = widget.slotItems?.values.first ?? <String>[];
+    final mealName = _localMealName ?? 'Meal';
+    final dateStr = _localDate ?? '---';
+    final locationStr = _localLocation ?? '---';
+    final itemsList = _localItems ?? <String>[];
     
     return Container(
       padding: const EdgeInsets.all(22),
@@ -420,18 +520,18 @@ class _MealPassScreenState extends State<MealPassScreen> {
               Container(
                 width: 10,
                 height: 10,
-                decoration: const BoxDecoration(
-                  color: AppColors.success,
+                decoration: BoxDecoration(
+                  color: _localIsCompleted ? AppColors.textDisabled : AppColors.success,
                   shape: BoxShape.circle,
                 ),
               ),
               const SizedBox(width: 8),
-              const Text(
-                'Active — Ready to scan',
+              Text(
+                _localIsCompleted ? 'Completed — Meal collected' : 'Active — Ready to scan',
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
-                  color: AppColors.success,
+                  color: _localIsCompleted ? AppColors.textDisabled : AppColors.success,
                 ),
               ),
             ],
@@ -479,7 +579,17 @@ class _MealPassScreenState extends State<MealPassScreen> {
           child: _ActionButton(
             icon: Icons.star_border,
             label: 'Feedback',
-            onTap: () => Navigator.pushNamed(context, '/feedback'),
+            isDisabled: !_localIsCompleted,
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => FeedbackScreen(
+                    targetBookingId: _localBookingId,
+                  ),
+                ),
+              );
+            },
           ),
         ),
         const SizedBox(width: 12),
@@ -585,22 +695,25 @@ class _ActionButton extends StatelessWidget {
   final IconData icon;
   final String label;
   final VoidCallback onTap;
+  final bool isDisabled;
+  
   const _ActionButton({
     required this.icon,
     required this.label,
     required this.onTap,
+    this.isDisabled = false,
   });
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: onTap,
+      onTap: isDisabled ? null : onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 16),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: isDisabled ? const Color(0xFFF9FAFB) : Colors.white,
           borderRadius: BorderRadius.circular(16),
-          boxShadow: [
+          boxShadow: isDisabled ? [] : [
             BoxShadow(
               color: Colors.black.withValues(alpha: 0.04),
               blurRadius: 12,
@@ -610,14 +723,14 @@ class _ActionButton extends StatelessWidget {
         ),
         child: Column(
           children: [
-            Icon(icon, color: AppColors.primary, size: 22),
+            Icon(icon, color: isDisabled ? AppColors.textDisabled : AppColors.primary, size: 22),
             const SizedBox(height: 6),
             Text(
               label,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: AppColors.textMuted,
+                color: isDisabled ? AppColors.textDisabled : AppColors.textMuted,
               ),
             ),
           ],

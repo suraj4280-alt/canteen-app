@@ -5,6 +5,7 @@ import 'skip_meal_screen.dart';
 import 'meal_pass_screen.dart';
 import 'meal_state.dart';
 import 'services/api_service.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 class MealBookingScreen extends StatefulWidget {
   const MealBookingScreen({super.key});
@@ -25,19 +26,14 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
   List<String> _mealTabs = [];
   List<int> _slotIds = []; // Real DB slot IDs
   Map<int, int?> _existingBookingIds = {}; // Tab index → booking ID (for skip)
-  Map<String, String> _slotCutoffData = {}; // Slot name → raw cutoff time string from API
+
 
   final Map<int, Set<int>> _selectedItems = {};
 
   @override
   void initState() {
     super.initState();
-    final now = DateTime.now();
-    _selectedDate = DateTime(
-      now.year,
-      now.month,
-      now.day,
-    ).add(const Duration(days: 1));
+    _selectedDate = _getDefaultBookingDate();
     _loadSlots();
     MealStateProvider.instance.addListener(_onStateChanged);
   }
@@ -52,8 +48,10 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
     super.dispose();
   }
 
-  /// Tasks 9, 10, 11: Load slot metadata from API once
+  /// Load slot metadata from API once
   bool _slotsError = false;
+  // Store full window data per slot index: {openTime, closeTime, dayOffset}
+  Map<int, Map<String, dynamic>> _slotWindowData = {};
 
   Future<void> _loadSlots() async {
     try {
@@ -63,23 +61,34 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
         setState(() {
           _mealTabs = slots.map((s) => s['name']?.toString() ?? 'Meal').toList();
           _slotIds = slots.map((s) => s['id'] as int).toList();
-          _mealTimes = slots.map((s) {
-            final cutoff = s['booking_cutoff_time']?.toString() ?? '';
-            if (cutoff.length >= 5) {
-              final parts = cutoff.substring(0, 5).split(':');
-              final h = int.tryParse(parts[0]) ?? 0;
-              final m = parts.length > 1 ? parts[1] : '00';
-              final suffix = h >= 12 ? 'PM' : 'AM';
-              final h12 = h > 12 ? h - 12 : (h == 0 ? 12 : h);
-              return '$h12:$m $suffix';
+          
+          // Store full window data for each slot
+          _slotWindowData = {};
+          for (int i = 0; i < slots.length; i++) {
+            final s = slots[i];
+            _slotWindowData[i] = {
+              'booking_open_time': s['booking_open_time']?.toString() ?? '',
+              'booking_cutoff_time': s['booking_cutoff_time']?.toString() ?? '',
+              'booking_open_day_offset': s['booking_open_day_offset'] ?? 0,
+              'start_time': s['start_time']?.toString() ?? '',
+              'end_time': s['end_time']?.toString() ?? '',
+            };
+          }
+          
+          // Generate display text for booking window
+          _mealTimes = List.generate(slots.length, (i) {
+            final w = _slotWindowData[i]!;
+            final offset = w['booking_open_day_offset'] as int;
+            final openStr = _formatTimeStr(w['booking_open_time'] as String);
+            final closeStr = _formatTimeStr(w['booking_cutoff_time'] as String);
+            if (offset == -1) {
+              return 'Book $openStr-$closeStr prev night';
+            } else {
+              return 'Book $openStr-$closeStr today';
             }
-            return cutoff;
-          }).toList();
-          // Store raw cutoff data for _isCutoffPassed
-          _slotCutoffData = Map.fromIterables(
-            _mealTabs,
-            slots.map((s) => s['booking_cutoff_time']?.toString() ?? ''),
-          );
+          });
+          
+
           // Initialize dynamic arrays to match slot count
           _allMenuItems = List.generate(_mealTabs.length, (_) => <Map<String, dynamic>>[]);
           // Initialize dynamic maps to match slot count
@@ -98,6 +107,99 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
     }
   }
 
+  /// Format a time string like "18:00:00" to "6:00 PM"
+  String _formatTimeStr(String timeStr) {
+    if (timeStr.length < 5) return timeStr;
+    final parts = timeStr.substring(0, 5).split(':');
+    final h = int.tryParse(parts[0]) ?? 0;
+    final m = parts.length > 1 ? parts[1] : '00';
+    final suffix = h >= 12 ? 'PM' : 'AM';
+    final h12 = h > 12 ? h - 12 : (h == 0 ? 12 : h);
+    return '$h12:$m $suffix';
+  }
+
+  /// Check if the booking window is currently open for a given tab index and date.
+  /// Returns a map: {open: bool, reason: String}
+  Map<String, dynamic> _checkBookingWindow(int tabIndex) {
+    final w = _slotWindowData[tabIndex];
+    if (w == null) return {'open': false, 'reason': 'Slot data unavailable'};
+    
+    final openTimeStr = w['booking_open_time'] as String;
+    final closeTimeStr = w['booking_cutoff_time'] as String;
+    final dayOffset = w['booking_open_day_offset'] as int;
+    
+    if (openTimeStr.length < 5 || closeTimeStr.length < 5) {
+      return {'open': false, 'reason': 'Slot data unavailable'};
+    }
+    
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final selectedDay = DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
+    
+    // The booking window date for this meal
+    final windowDate = selectedDay.add(Duration(days: dayOffset));
+    
+    final openMinutes = _timeStrToMinutes(openTimeStr);
+    final closeMinutes = _timeStrToMinutes(closeTimeStr);
+    final nowMinutes = now.hour * 60 + now.minute;
+    
+    // If we haven't reached the window date yet
+    if (today.isBefore(windowDate)) {
+      final openStr = _formatTimeStr(openTimeStr);
+      if (dayOffset == -1) {
+        return {'open': false, 'reason': 'Opens at $openStr the evening before'};
+      } else {
+        return {'open': false, 'reason': 'Opens at $openStr on ${_formatShortDate(windowDate)}'};
+      }
+    }
+    
+    // We are on the window date
+    if (today.isAtSameMomentAs(windowDate)) {
+      if (nowMinutes < openMinutes) {
+        final openStr = _formatTimeStr(openTimeStr);
+        return {'open': false, 'reason': 'Opens at $openStr'};
+      }
+      if (nowMinutes > closeMinutes) {
+        return {'open': false, 'reason': 'Booking window closed'};
+      }
+      return {'open': true, 'reason': ''};
+    }
+    
+    // Window date has passed
+    return {'open': false, 'reason': 'Booking window closed'};
+  }
+  
+  int _timeStrToMinutes(String timeStr) {
+    final parts = timeStr.split(':');
+    return int.parse(parts[0]) * 60 + int.parse(parts[1]);
+  }
+  
+  String _formatShortDate(DateTime d) {
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return '${d.day} ${months[d.month - 1]}';
+  }
+
+
+  /// Determine the best default date for booking based on current time.
+  /// If it's between 6PM-9PM, default to tomorrow (for Breakfast/Lunch).
+  /// If it's between 9AM-12PM, default to today (for Snacks/Dinner).
+  /// Otherwise, default to tomorrow.
+  DateTime _getDefaultBookingDate() {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final h = now.hour;
+    
+    // Between 9AM-12PM: same-day slots (Snacks/Dinner) are bookable
+    if (h >= 9 && h < 12) {
+      return today;
+    }
+    // Between 6PM-9PM: next-day slots (Breakfast/Lunch) are bookable
+    if (h >= 18 && h < 21) {
+      return today.add(const Duration(days: 1));
+    }
+    // Default to tomorrow
+    return today.add(const Duration(days: 1));
+  }
 
   String _formatDate(DateTime date) {
     const months = [
@@ -228,7 +330,7 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
     for (int i = 0; i < _slotIds.length; i++) {
       try {
         final menuData = await ApiService.getMenu(dateStr, _slotIds[i]);
-        final items = (menuData['items'] as List).map((e) => {
+        final items = (menuData['items'] as List).map((e) => <String, dynamic>{
           'id': e['id'],
           'name': e['name'],
           'desc': e['description'] ?? '',
@@ -538,19 +640,10 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
     if (slotStatus[mealIndex] == 'confirmed' && _isRebooking[mealIndex] != true) return; // Already booked
     if (slotStatus[mealIndex] == 'skipped') return; // Already skipped
 
-    final now = DateTime.now();
-    final tomorrow = DateTime(
-      now.year,
-      now.month,
-      now.day,
-    ).add(const Duration(days: 1));
-    final selectedDay = DateTime(
-      _selectedDate.year,
-      _selectedDate.month,
-      _selectedDate.day,
-    );
-    if (!selectedDay.isAtSameMomentAs(tomorrow)) {
-      return; // Only tomorrow is bookable
+    // Check if the booking window is open for this slot
+    final windowResult = _checkBookingWindow(mealIndex);
+    if (windowResult['open'] != true) {
+      return; // Window not open
     }
 
     setState(() {
@@ -915,24 +1008,16 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
     final isPending = !isBooked && !isSkipped && !isCancelled;
     final isActive = isPending || isRebooking;
 
-    final now = DateTime.now();
-    final tomorrow = DateTime(
-      now.year,
-      now.month,
-      now.day,
-    ).add(const Duration(days: 1));
-    final selectedDay = DateTime(
-      _selectedDate.year,
-      _selectedDate.month,
-      _selectedDate.day,
-    );
-    final isTomorrow = selectedDay.isAtSameMomentAs(tomorrow);
-
     final items = _allMenuItems[index];
-    final tabName = _mealTabs[index];
-    final cutoffPassed = _isCutoffPassed(_selectedDate, tabName);
 
-    if (!isTomorrow && isActive) {
+    
+    // Use the new booking window check
+    final windowResult = _checkBookingWindow(index);
+    final windowOpen = windowResult['open'] == true;
+    final windowReason = windowResult['reason']?.toString() ?? '';
+    final cutoffPassed = !windowOpen;
+
+    if (!windowOpen && isActive && !isRebooking) {
       return Padding(
         padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
         child: Container(
@@ -953,8 +1038,8 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Icon(
-                Icons.warning_amber_rounded,
-                color: Colors.red,
+                Icons.schedule,
+                color: Color(0xFFB45309),
                 size: 24,
               ),
               const SizedBox(width: 16),
@@ -967,16 +1052,24 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
                       style: const TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
-                        color: Colors.red,
+                        color: Color(0xFFB45309),
                       ),
                     ),
                     const SizedBox(height: 4),
-                    const Text(
-                      "Bookings are only accepted for tomorrow's meals. Please select tomorrow's date to continue.",
-                      style: TextStyle(
+                    Text(
+                      windowReason,
+                      style: const TextStyle(
                         fontSize: 14,
-                        color: Colors.red,
+                        color: Color(0xFFB45309),
                         height: 1.4,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      _mealTimes[index],
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textMuted,
                       ),
                     ),
                   ],
@@ -1057,11 +1150,10 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
-
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Booking closes at ${_mealTimes[index]}',
+                          _mealTimes[index],
                           style: const TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.bold,
@@ -1069,9 +1161,9 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
                           ),
                         ),
                         const SizedBox(height: 2),
-                        const Text(
-                          'Book before cutoff time',
-                          style: TextStyle(
+                        Text(
+                          'Booking window is open now',
+                          style: const TextStyle(
                             fontSize: 11,
                             fontWeight: FontWeight.w700,
                             color: Color(0xFFA67C52),
@@ -1162,24 +1254,40 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
               ),
             ),
           ] else ...[
-            ...items.asMap().entries.map((e) {
-              bool disabled = !isActive;
-              bool forceSelected = false;
-              if (!isActive && isBooked) {
-                forceSelected = (_selectedItems[index] ?? {}).contains(e.key);
-              }
+            if (items.isEmpty) ...[
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 24),
+                child: Center(
+                  child: Text(
+                    'No menu available for this date.',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: AppColors.textMuted,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ),
+              ),
+            ] else ...[
+              ...items.asMap().entries.map((e) {
+                bool disabled = !isActive;
+                bool forceSelected = false;
+                if (!isActive && isBooked) {
+                  forceSelected = (_selectedItems[index] ?? {}).contains(e.key);
+                }
 
-              if (disabled && !forceSelected && !isSkipped) return const SizedBox.shrink();
+                if (disabled && !forceSelected && !isSkipped) return const SizedBox.shrink();
 
-              return _buildFoodItem(
-                index,
-                e.key,
-                e.value,
-                disabled: disabled,
-                forceSelected: forceSelected,
-                isCancelled: isCancelled && !isRebooking,
-              );
-            }),
+                return _buildFoodItem(
+                  index,
+                  e.key,
+                  e.value,
+                  disabled: disabled,
+                  forceSelected: forceSelected,
+                  isCancelled: isCancelled && !isRebooking,
+                );
+              }),
+            ],
 
             if (isCancelled && !isRebooking) ...[
               const SizedBox(height: 8),
@@ -1452,41 +1560,6 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
     return const SizedBox();
   }
 
-  bool _isCutoffPassed(DateTime mealDate, String mealType) {
-    final now = DateTime.now();
-    try {
-      final today = DateTime(now.year, now.month, now.day);
-      final compareDate = DateTime(mealDate.year, mealDate.month, mealDate.day);
-
-      if (compareDate.isBefore(today)) {
-        return true;
-      }
-      if (compareDate.isAfter(today)) {
-        return false;
-      }
-
-      // Use API cutoff times from loaded slot data
-      final cutoffStr = _slotCutoffData[mealType] ?? '';
-      if (cutoffStr.length >= 5) {
-        final parts = cutoffStr.split(':');
-        final cutoffHour = int.tryParse(parts[0]) ?? 0;
-        final cutoffMinute = parts.length > 1 ? (int.tryParse(parts[1]) ?? 0) : 0;
-        final cutoffTime = DateTime(
-          now.year,
-          now.month,
-          now.day,
-          cutoffHour,
-          cutoffMinute,
-        );
-        return now.isAfter(cutoffTime);
-      }
-
-      // Fallback if no API data available
-      return false;
-    } catch (_) {
-      return true;
-    }
-  }
 
   void _showCancelDialog(int index) {
     final mealName = _mealTabs[index];
@@ -1950,11 +2023,28 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
                     : AppColors.inputBackground,
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Icon(
-                item['icon'] as IconData,
-                color: disabled ? AppColors.textDisabled : AppColors.primary,
-                size: 28,
-              ),
+              clipBehavior: Clip.hardEdge,
+              child: item['image_url'] != null && item['image_url'].toString().isNotEmpty
+                  ? CachedNetworkImage(
+                      imageUrl: '${ApiService.baseUrl}${item['image_url']}',
+                      fit: BoxFit.cover,
+                      placeholder: (context, url) => const Center(
+                        child: SizedBox(
+                          width: 20, height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2)
+                        )
+                      ),
+                      errorWidget: (context, url, error) => Icon(
+                        item['icon'] as IconData? ?? Icons.eco,
+                        color: disabled ? AppColors.textDisabled : AppColors.primary,
+                        size: 28,
+                      ),
+                    )
+                  : Icon(
+                      item['icon'] as IconData? ?? Icons.eco,
+                      color: disabled ? AppColors.textDisabled : AppColors.primary,
+                      size: 28,
+                    ),
             ),
             const SizedBox(width: 16),
             Expanded(

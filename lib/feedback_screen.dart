@@ -4,7 +4,8 @@ import 'meal_state.dart';
 import 'services/api_service.dart';
 
 class FeedbackScreen extends StatefulWidget {
-  const FeedbackScreen({super.key});
+  final int? targetBookingId;
+  const FeedbackScreen({super.key, this.targetBookingId});
 
   @override
   State<FeedbackScreen> createState() => _FeedbackScreenState();
@@ -110,6 +111,12 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
         if (statusName != 'used') continue;
 
         final bookingId = item['id'] as int? ?? 0;
+        
+        // If a targetBookingId is provided, ONLY show that specific booking
+        if (widget.targetBookingId != null && bookingId != widget.targetBookingId) {
+          continue;
+        }
+
         final dateStr = item['date']?.toString() ?? '';
         final slotName = item['slot_name']?.toString() ?? 'Meal';
         final hasFeedback = feedbackBookingIds.contains(bookingId);
@@ -220,10 +227,20 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
                     child: CircularProgressIndicator(color: AppColors.primary),
                   )
                 : _slots.isEmpty
-                ? const Center(
-                    child: Text(
-                      'No booked meals found.',
-                      style: TextStyle(color: AppColors.textMuted),
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 32.0),
+                      child: Text(
+                        widget.targetBookingId != null
+                            ? 'Feedback is locked.\n\nYou must scan your QR token at the canteen and collect your meal before you can leave feedback.'
+                            : 'No completed meals found. You can only leave feedback after collecting your meal.',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: AppColors.textMuted,
+                          height: 1.5,
+                          fontSize: 14,
+                        ),
+                      ),
                     ),
                   )
                 : ListView.builder(

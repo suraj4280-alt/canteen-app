@@ -337,6 +337,7 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
           'icon': (e['type'] == 'veg') ? Icons.eco : Icons.set_meal,
           'veg': e['type'] == 'veg',
           'exclusive': e['exclusive_group'],
+          'image_url': e['image_url'],
         }).toList();
         _allMenuItems[i] = items;
       } catch (e) {

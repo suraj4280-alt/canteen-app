@@ -72,9 +72,7 @@ class ApiService {
   // ── Headers ────────────────────────────────────────────────────────────────
 
   static Map<String, String> getHeaders() {
-    final headers = <String, String>{
-      'Content-Type': 'application/json',
-    };
+    final headers = <String, String>{'Content-Type': 'application/json'};
     if (_token != null) {
       headers['Authorization'] = 'Bearer $_token';
     }
@@ -92,11 +90,13 @@ class ApiService {
     _isRefreshing = true;
     try {
       final url = Uri.parse('$baseUrl/api/auth/refresh');
-      final response = await http.post(
-        url,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'refresh_token': _refreshToken}),
-      ).timeout(_timeout);
+      final response = await http
+          .post(
+            url,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'refresh_token': _refreshToken}),
+          )
+          .timeout(_timeout);
       if (response.statusCode == 200) {
         final decoded = jsonDecode(response.body) as Map<String, dynamic>;
         await _persistToken(decoded['access_token'] as String);
@@ -112,7 +112,9 @@ class ApiService {
   /// Retry wrapper — executes [requestFn], and if it gets a 401,
   /// attempts a token refresh then retries ONCE with new headers.
   /// Wraps all calls with a timeout for production safety.
-  static Future<http.Response> _withRetry(Future<http.Response> Function() requestFn) async {
+  static Future<http.Response> _withRetry(
+    Future<http.Response> Function() requestFn,
+  ) async {
     try {
       http.Response response = await requestFn().timeout(_timeout);
       if (response.statusCode == 401) {
@@ -129,7 +131,9 @@ class ApiService {
       }
       return response;
     } on TimeoutException {
-      throw Exception('Server is not responding. Please check your connection.');
+      throw Exception(
+        'Server is not responding. Please check your connection.',
+      );
     }
   }
 
@@ -140,7 +144,9 @@ class ApiService {
         final detail = decoded['detail'];
         if (detail is String) return detail;
         if (detail is List) {
-          return detail.map((e) => e is Map ? e['msg'] ?? e.toString() : e.toString()).join(', ');
+          return detail
+              .map((e) => e is Map ? e['msg'] ?? e.toString() : e.toString())
+              .join(', ');
         }
       }
       return 'Unknown error occurred';
@@ -182,11 +188,13 @@ class ApiService {
         body['room_number'] = roomNumber;
       }
 
-      final response = await http.post(
-        url,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(body),
-      ).timeout(_timeout);
+      final response = await http
+          .post(
+            url,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(body),
+          )
+          .timeout(_timeout);
 
       if (response.statusCode == 201) {
         return null; // Success
@@ -194,10 +202,12 @@ class ApiService {
         final decoded = jsonDecode(response.body);
         if (decoded is Map && decoded['detail'] is List) {
           final errors = decoded['detail'] as List;
-          final messages = errors.map((e) {
-            if (e is Map && e['msg'] != null) return e['msg'];
-            return e.toString();
-          }).join(', ');
+          final messages = errors
+              .map((e) {
+                if (e is Map && e['msg'] != null) return e['msg'];
+                return e.toString();
+              })
+              .join(', ');
           return messages;
         }
         return decoded['detail']?.toString() ?? 'Registration failed';
@@ -209,17 +219,19 @@ class ApiService {
 
   // ── Auth: Login ────────────────────────────────────────────────────────────
 
-  static Future<Map<String, dynamic>> login(String identifier, String password) async {
+  static Future<Map<String, dynamic>> login(
+    String identifier,
+    String password,
+  ) async {
     final url = Uri.parse('$baseUrl/api/auth/login');
     try {
-      final response = await http.post(
-        url,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'identifier': identifier,
-          'password': password,
-        }),
-      ).timeout(_timeout);
+      final response = await http
+          .post(
+            url,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'identifier': identifier, 'password': password}),
+          )
+          .timeout(_timeout);
 
       final decoded = jsonDecode(response.body) as Map<String, dynamic>;
       if (response.statusCode == 200) {
@@ -239,7 +251,9 @@ class ApiService {
         throw Exception(decoded['detail'] ?? 'Login failed');
       }
     } on TimeoutException {
-      throw Exception('Server is not responding. Please check your connection.');
+      throw Exception(
+        'Server is not responding. Please check your connection.',
+      );
     }
   }
 
@@ -247,10 +261,10 @@ class ApiService {
 
   static Future<Map<String, dynamic>?> fetchAndCacheUser() async {
     try {
-      final response = await _withRetry(() => http.get(
-        Uri.parse('$baseUrl/api/auth/me'),
-        headers: getHeaders(),
-      ));
+      final response = await _withRetry(
+        () =>
+            http.get(Uri.parse('$baseUrl/api/auth/me'), headers: getHeaders()),
+      );
       if (response.statusCode == 200) {
         final user = jsonDecode(response.body) as Map<String, dynamic>;
         await _persistUser(user);
@@ -289,10 +303,12 @@ class ApiService {
   // ── Meals ──────────────────────────────────────────────────────────────────
 
   static Future<List<dynamic>> getMeals() async {
-    final response = await _withRetry(() => http.get(
-      Uri.parse('$baseUrl/api/meals/slots'),
-      headers: getHeaders(),
-    ));
+    final response = await _withRetry(
+      () => http.get(
+        Uri.parse('$baseUrl/api/meals/slots'),
+        headers: getHeaders(),
+      ),
+    );
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as List<dynamic>;
     } else {
@@ -301,10 +317,12 @@ class ApiService {
   }
 
   static Future<Map<String, dynamic>> getMenu(String date, int slotId) async {
-    final response = await _withRetry(() => http.get(
-      Uri.parse('$baseUrl/api/meals/menu?date=$date&slot_id=$slotId'),
-      headers: getHeaders(),
-    ));
+    final response = await _withRetry(
+      () => http.get(
+        Uri.parse('$baseUrl/api/meals/menu?date=$date&slot_id=$slotId'),
+        headers: getHeaders(),
+      ),
+    );
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as Map<String, dynamic>;
     } else {
@@ -314,23 +332,34 @@ class ApiService {
 
   // ── Bookings ───────────────────────────────────────────────────────────────
 
-  static Future<http.Response> createBooking(int slotId, String date, List<int> itemIds) async {
-    return await _withRetry(() => http.post(
-      Uri.parse('$baseUrl/api/bookings'),
-      headers: getHeaders(),
-      body: jsonEncode({
-        'slot_id': slotId,
-        'date': date,
-        'item_ids': itemIds,
-      }),
-    ));
+  static Future<http.Response> createBooking(
+    int slotId,
+    String date,
+    List<int> itemIds,
+  ) async {
+    return await _withRetry(
+      () => http.post(
+        Uri.parse('$baseUrl/api/bookings'),
+        headers: getHeaders(),
+        body: jsonEncode({
+          'slot_id': slotId,
+          'date': date,
+          'item_ids': itemIds,
+        }),
+      ),
+    );
   }
 
-  static Future<Map<String, dynamic>> getBookingHistory({int page = 1, int size = 50}) async {
-    final response = await _withRetry(() => http.get(
-      Uri.parse('$baseUrl/api/bookings?page=$page&size=$size'),
-      headers: getHeaders(),
-    ));
+  static Future<Map<String, dynamic>> getBookingHistory({
+    int page = 1,
+    int size = 50,
+  }) async {
+    final response = await _withRetry(
+      () => http.get(
+        Uri.parse('$baseUrl/api/bookings?page=$page&size=$size'),
+        headers: getHeaders(),
+      ),
+    );
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as Map<String, dynamic>;
     } else {
@@ -339,32 +368,40 @@ class ApiService {
   }
 
   static Future<http.Response> skipBooking(int bookingId, String reason) async {
-    return await _withRetry(() => http.post(
-      Uri.parse('$baseUrl/api/bookings/$bookingId/skip'),
-      headers: getHeaders(),
-      body: jsonEncode({'reason': reason}),
-    ));
+    return await _withRetry(
+      () => http.post(
+        Uri.parse('$baseUrl/api/bookings/$bookingId/skip'),
+        headers: getHeaders(),
+        body: jsonEncode({'reason': reason}),
+      ),
+    );
   }
 
   static Future<http.Response> cancelBooking(int bookingId) async {
-    return await _withRetry(() => http.delete(
-      Uri.parse('$baseUrl/api/bookings/$bookingId'),
-      headers: getHeaders(),
-    ));
+    return await _withRetry(
+      () => http.delete(
+        Uri.parse('$baseUrl/api/bookings/$bookingId'),
+        headers: getHeaders(),
+      ),
+    );
   }
 
   static Future<http.Response> undoSkipBooking(int bookingId) async {
-    return await _withRetry(() => http.delete(
-      Uri.parse('$baseUrl/api/bookings/$bookingId/skip'),
-      headers: getHeaders(),
-    ));
+    return await _withRetry(
+      () => http.delete(
+        Uri.parse('$baseUrl/api/bookings/$bookingId/skip'),
+        headers: getHeaders(),
+      ),
+    );
   }
 
   static Future<Map<String, dynamic>> getSlotStatus(String date) async {
-    final response = await _withRetry(() => http.get(
-      Uri.parse('$baseUrl/api/bookings/status?date=$date'),
-      headers: getHeaders(),
-    ));
+    final response = await _withRetry(
+      () => http.get(
+        Uri.parse('$baseUrl/api/bookings/status?date=$date'),
+        headers: getHeaders(),
+      ),
+    );
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as Map<String, dynamic>;
     } else {
@@ -375,19 +412,23 @@ class ApiService {
   // ── QR / Tokens ────────────────────────────────────────────────────────────
 
   static Future<http.Response> getBookingQR(int bookingId) async {
-    return await _withRetry(() => http.get(
-      Uri.parse('$baseUrl/api/bookings/$bookingId/qr'),
-      headers: getHeaders(),
-    ));
+    return await _withRetry(
+      () => http.get(
+        Uri.parse('$baseUrl/api/bookings/$bookingId/qr'),
+        headers: getHeaders(),
+      ),
+    );
   }
 
   // ── Stats ──────────────────────────────────────────────────────────────────
 
   static Future<Map<String, dynamic>> getBookingStats() async {
-    final response = await _withRetry(() => http.get(
-      Uri.parse('$baseUrl/api/bookings/stats'),
-      headers: getHeaders(),
-    ));
+    final response = await _withRetry(
+      () => http.get(
+        Uri.parse('$baseUrl/api/bookings/stats'),
+        headers: getHeaders(),
+      ),
+    );
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as Map<String, dynamic>;
     } else {
@@ -398,10 +439,12 @@ class ApiService {
   // ── Upcoming Bookings ─────────────────────────────────────────────────────
 
   static Future<List<dynamic>> getUpcomingBookings() async {
-    final response = await _withRetry(() => http.get(
-      Uri.parse('$baseUrl/api/bookings/upcoming'),
-      headers: getHeaders(),
-    ));
+    final response = await _withRetry(
+      () => http.get(
+        Uri.parse('$baseUrl/api/bookings/upcoming'),
+        headers: getHeaders(),
+      ),
+    );
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as List<dynamic>;
     } else {
@@ -427,18 +470,19 @@ class ApiService {
     };
     if (comment != null && comment.isNotEmpty) body['comment'] = comment;
     if (tagIds != null && tagIds.isNotEmpty) body['tag_ids'] = tagIds;
-    return await _withRetry(() => http.post(
-      Uri.parse('$baseUrl/api/feedback'),
-      headers: getHeaders(),
-      body: jsonEncode(body),
-    ));
+    return await _withRetry(
+      () => http.post(
+        Uri.parse('$baseUrl/api/feedback'),
+        headers: getHeaders(),
+        body: jsonEncode(body),
+      ),
+    );
   }
 
   static Future<List<dynamic>> getFeedback() async {
-    final response = await _withRetry(() => http.get(
-      Uri.parse('$baseUrl/api/feedback'),
-      headers: getHeaders(),
-    ));
+    final response = await _withRetry(
+      () => http.get(Uri.parse('$baseUrl/api/feedback'), headers: getHeaders()),
+    );
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as List<dynamic>;
     } else {
@@ -456,21 +500,26 @@ class ApiService {
     final body = <String, dynamic>{};
     if (phone != null) body['phone'] = phone;
     if (roomNumber != null) body['room_number'] = roomNumber;
-    if (dietaryPreference != null) body['dietary_preference'] = dietaryPreference;
-    return await _withRetry(() => http.put(
-      Uri.parse('$baseUrl/api/auth/profile'),
-      headers: getHeaders(),
-      body: jsonEncode(body),
-    ));
+    if (dietaryPreference != null)
+      body['dietary_preference'] = dietaryPreference;
+    return await _withRetry(
+      () => http.put(
+        Uri.parse('$baseUrl/api/auth/profile'),
+        headers: getHeaders(),
+        body: jsonEncode(body),
+      ),
+    );
   }
 
   // ── Feedback Tags ─────────────────────────────────────────────────────────
 
   static Future<List<dynamic>> getFeedbackTags() async {
-    final response = await _withRetry(() => http.get(
-      Uri.parse('$baseUrl/api/feedback/tags'),
-      headers: getHeaders(),
-    ));
+    final response = await _withRetry(
+      () => http.get(
+        Uri.parse('$baseUrl/api/feedback/tags'),
+        headers: getHeaders(),
+      ),
+    );
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as List<dynamic>;
     } else {

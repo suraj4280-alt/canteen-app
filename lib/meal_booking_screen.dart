@@ -181,23 +181,12 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
 
 
   /// Determine the best default date for booking based on current time.
-  /// If it's between 6PM-9PM, default to tomorrow (for Breakfast/Lunch).
-  /// If it's between 9AM-12PM, default to today (for Snacks/Dinner).
-  /// Otherwise, default to tomorrow.
+  /// New rule: Tomorrow's meals must be booked within the global admin-configured time window today.
+  /// So the default selected date should be tomorrow.
   DateTime _getDefaultBookingDate() {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
-    final h = now.hour;
-    
-    // Between 9AM-12PM: same-day slots (Snacks/Dinner) are bookable
-    if (h >= 9 && h < 12) {
-      return today;
-    }
-    // Between 6PM-9PM: next-day slots (Breakfast/Lunch) are bookable
-    if (h >= 18 && h < 21) {
-      return today.add(const Duration(days: 1));
-    }
-    // Default to tomorrow
+    // Always default to tomorrow since all bookings are for the next day
     return today.add(const Duration(days: 1));
   }
 

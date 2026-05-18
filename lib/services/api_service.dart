@@ -335,17 +335,29 @@ class ApiService {
   static Future<http.Response> createBooking(
     int slotId,
     String date,
-    List<int> itemIds,
-  ) async {
+    List<int> itemIds, {
+    Map<int, int>? quantities,
+  }) async {
+    Map<String, dynamic> body = {
+      'slot_id': slotId,
+      'date': date,
+    };
+    
+    if (quantities != null && quantities.isNotEmpty) {
+      // New format: items with quantities
+      body['items'] = itemIds.map((id) {
+        return {'item_id': id, 'quantity': quantities[id] ?? 1};
+      }).toList();
+    } else {
+      // Legacy format
+      body['item_ids'] = itemIds;
+    }
+    
     return await _withRetry(
       () => http.post(
         Uri.parse('$baseUrl/api/bookings'),
         headers: getHeaders(),
-        body: jsonEncode({
-          'slot_id': slotId,
-          'date': date,
-          'item_ids': itemIds,
-        }),
+        body: jsonEncode(body),
       ),
     );
   }
@@ -500,8 +512,9 @@ class ApiService {
     final body = <String, dynamic>{};
     if (phone != null) body['phone'] = phone;
     if (roomNumber != null) body['room_number'] = roomNumber;
-    if (dietaryPreference != null)
+    if (dietaryPreference != null) {
       body['dietary_preference'] = dietaryPreference;
+    }
     return await _withRetry(
       () => http.put(
         Uri.parse('$baseUrl/api/auth/profile'),
@@ -522,6 +535,39 @@ class ApiService {
     );
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as List<dynamic>;
+    } else {
+      throw Exception(_extractError(response));
+    }
+  }
+
+  // ── Wallet ────────────────────────────────────────────────────────────────
+
+  static Future<Map<String, dynamic>> getWalletBalance() async {
+    final response = await _withRetry(
+      () => http.get(
+        Uri.parse('$baseUrl/api/wallet'),
+        headers: getHeaders(),
+      ),
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    } else {
+      throw Exception(_extractError(response));
+    }
+  }
+
+  static Future<Map<String, dynamic>> getWalletTransactions({
+    int page = 1,
+    int size = 20,
+    String? type,
+  }) async {
+    String url = '$baseUrl/api/wallet/transactions?page=$page&size=$size';
+    if (type != null) url += '&type=$type';
+    final response = await _withRetry(
+      () => http.get(Uri.parse(url), headers: getHeaders()),
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
     } else {
       throw Exception(_extractError(response));
     }

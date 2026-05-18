@@ -5,6 +5,7 @@ import 'app_colors.dart';
 import 'services/api_service.dart';
 import 'meal_state.dart';
 import 'meal_pass_screen.dart';
+import 'wallet_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -27,12 +28,17 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isLoadingMeals = false;
   String? _mealsError;
 
+  // Wallet state
+  double _walletBalance = 0;
+  bool _walletLoaded = false;
+
   @override
   void initState() {
     super.initState();
     _refreshData();
     _fetchMeals();
     _fetchUpcomingBooking();
+    _fetchWalletBalance();
     MealStateProvider.instance.addListener(_onStateChanged);
     _timer = Timer.periodic(const Duration(seconds: 30), (_) => _refreshData());
   }
@@ -251,11 +257,26 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _fetchWalletBalance() async {
+    try {
+      final wallet = await ApiService.getWalletBalance();
+      if (mounted) {
+        setState(() {
+          _walletBalance = (wallet['current_balance'] as num?)?.toDouble() ?? 0;
+          _walletLoaded = true;
+        });
+      }
+    } catch (e) {
+      debugPrint('Failed to fetch wallet: $e');
+    }
+  }
+
   /// Pull-to-refresh handler — reloads all data
   Future<void> _handleRefresh() async {
     await Future.wait([
       _fetchMeals(),
       _fetchUpcomingBooking(),
+      _fetchWalletBalance(),
     ]);
     _refreshData();
   }
@@ -279,6 +300,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: Column(
                       children: [
                         _buildMealArcSection(),
+                        const SizedBox(height: 16),
+                        _buildWalletCard(),
                         const SizedBox(height: 16),
                         _buildNoticeStrip(),
                         const SizedBox(height: 16),
@@ -516,6 +539,102 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildWalletCard() {
+    if (!_walletLoaded) return const SizedBox.shrink();
+
+    return GestureDetector(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const WalletScreen()),
+      ),
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 20),
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF0F3460), Color(0xFF533483)],
+          ),
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF0F3460).withValues(alpha: 0.3),
+              blurRadius: 16,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: const Icon(
+                Icons.account_balance_wallet,
+                color: Colors.white,
+                size: 22,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Wallet Balance',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.white.withValues(alpha: 0.7),
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '\u20b9${_walletBalance.toStringAsFixed(2)}',
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.white,
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.2),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'View',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white.withValues(alpha: 0.9),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(Icons.arrow_forward_ios,
+                      size: 10, color: Colors.white.withValues(alpha: 0.9)),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

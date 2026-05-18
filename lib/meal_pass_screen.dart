@@ -43,12 +43,13 @@ class _MealPassScreenState extends State<MealPassScreen> {
   String? _qrPayload;
   bool _isLoadingQr = true;
   String? _qrError;
+  List<Map<String, dynamic>> _qrItems = [];
+  double _qrTotalCost = 0;
 
   @override
   void initState() {
     super.initState();
     _loadData();
-    _fetchQrData();
     _timer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (mounted) setState(() {});
     });
@@ -74,10 +75,25 @@ class _MealPassScreenState extends State<MealPassScreen> {
       if (mounted) {
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body);
+          // Parse items from QR response
+          List<Map<String, dynamic>> items = [];
+          if (data['items'] != null && data['items'] is List) {
+            items = (data['items'] as List).map((e) => Map<String, dynamic>.from(e)).toList();
+          }
           setState(() {
             _qrPayload = data['qr_token'];
             _qrError = null;
             _isLoadingQr = false;
+            _qrItems = items;
+            _qrTotalCost = (data['total_cost'] as num?)?.toDouble() ?? 0;
+            // Update local items with actual names from QR data
+            if (items.isNotEmpty) {
+              _localItems = items.map((e) {
+                final qty = e['quantity'] ?? 1;
+                final name = e['item_name'] ?? 'Item';
+                return qty > 1 ? '$name ×$qty' : name as String;
+              }).toList();
+            }
           });
         } else {
           final data = jsonDecode(response.body);
@@ -491,7 +507,7 @@ class _MealPassScreenState extends State<MealPassScreen> {
           _buildDetailRow('Location', locationStr),
           const Divider(height: 20, color: Color(0xFFF0EEEA)),
           const Text(
-            'ITEMS SELECTED',
+            'ITEMS ORDERED',
             style: TextStyle(
               fontSize: 11,
               fontWeight: FontWeight.w700,
@@ -500,10 +516,96 @@ class _MealPassScreenState extends State<MealPassScreen> {
             ),
           ),
           const SizedBox(height: 10),
-          _buildDetailRow(
-            'Items',
-            itemsList.isEmpty ? 'Standard Menu' : itemsList.join(', '),
-          ),
+          if (_qrItems.isNotEmpty) ...[
+            ..._qrItems.map((item) {
+              final name = item['item_name'] ?? 'Item';
+              final qty = item['quantity'] ?? 1;
+              final price = (item['price'] as num?)?.toDouble() ?? 0;
+              final itemType = item['item_type'] ?? 'veg';
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: itemType == 'non-veg'
+                            ? const Color(0xFFD32F2F)
+                            : const Color(0xFF2E7D32),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        name,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textDark,
+                        ),
+                      ),
+                    ),
+                    if (qty > 1)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF5F3FF),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            '×$qty',
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w800,
+                              color: Color(0xFF7C3AED),
+                            ),
+                          ),
+                        ),
+                      ),
+                    Text(
+                      '₹${(price * qty).toStringAsFixed(0)}',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+            const Divider(height: 16, color: Color(0xFFF0EEEA)),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Total',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textDark,
+                  ),
+                ),
+                Text(
+                  '₹${_qrTotalCost.toStringAsFixed(0)}',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF16A34A),
+                  ),
+                ),
+              ],
+            ),
+          ] else ...[
+            _buildDetailRow(
+              'Items',
+              itemsList.isEmpty ? 'Standard Menu' : itemsList.join(', '),
+            ),
+          ],
           const Divider(height: 20, color: Color(0xFFF0EEEA)),
           const Text(
             'STATUS',

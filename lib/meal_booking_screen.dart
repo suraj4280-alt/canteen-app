@@ -27,8 +27,9 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
   List<int> _slotIds = []; // Real DB slot IDs
   Map<int, int?> _existingBookingIds = {}; // Tab index → booking ID (for skip)
 
-
   final Map<int, Set<int>> _selectedItems = {};
+  final Map<int, Map<int, int>> _itemQuantities = {}; // tab → {itemId → qty}
+  int _advanceBookingDays = 2;
 
   @override
   void initState() {
@@ -62,6 +63,11 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
           _mealTabs = slots.map((s) => s['name']?.toString() ?? 'Meal').toList();
           _slotIds = slots.map((s) => s['id'] as int).toList();
           
+          // Read advance booking days from first slot (global setting)
+          if (slots.isNotEmpty) {
+            _advanceBookingDays = (slots[0]['advance_booking_days'] as int?) ?? 2;
+          }
+          
           // Store full window data for each slot
           _slotWindowData = {};
           for (int i = 0; i < slots.length; i++) {
@@ -72,6 +78,8 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
               'booking_open_day_offset': s['booking_open_day_offset'] ?? 0,
               'start_time': s['start_time']?.toString() ?? '',
               'end_time': s['end_time']?.toString() ?? '',
+              'late_booking_enabled': s['late_booking_enabled'] ?? false,
+              'late_booking_hours_before': s['late_booking_hours_before'] ?? 2,
             };
           }
           
@@ -327,6 +335,7 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
           'veg': e['type'] == 'veg',
           'exclusive': e['exclusive_group'],
           'image_url': e['image_url'],
+          'price': (e['effective_price'] ?? e['base_price'] ?? 0).toDouble(),
         }).toList();
         _allMenuItems[i] = items;
       } catch (e) {
@@ -390,6 +399,13 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
     final slotId = _slotIds.isNotEmpty ? _slotIds[index] : index + 1;
     final dateStr = '${_selectedDate.year}-${_selectedDate.month.toString().padLeft(2, '0')}-${_selectedDate.day.toString().padLeft(2, '0')}';
     final itemIds = selected.map((idx) => items[idx]['id'] as int).toList();
+    
+    // Build quantity map from _itemQuantities
+    final qtyMap = <int, int>{};
+    for (final idx in selected) {
+      final id = items[idx]['id'] as int;
+      qtyMap[id] = (_itemQuantities[index]?[id]) ?? 1;
+    }
 
     // Optimistic UI Update
     setState(() {
@@ -398,7 +414,7 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
     });
 
     try {
-      final response = await ApiService.createBooking(slotId, dateStr, itemIds);
+      final response = await ApiService.createBooking(slotId, dateStr, itemIds, quantities: qtyMap);
       if (response.statusCode != 201 && response.statusCode != 200) {
         if (mounted) {
           final errMap = jsonDecode(response.body);
@@ -408,11 +424,24 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
         return; // Stop navigation if booking fails
       }
       
+      final respData = jsonDecode(response.body);
+      final totalCost = respData['total_cost'];
+      final walletBal = respData['wallet_balance'];
+
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Booking successful!')));
+        String successMsg = 'Booking successful!';
+        if (totalCost != null && (totalCost as num) > 0) {
+          successMsg = 'Booked! \u20b9${totalCost.toStringAsFixed(0)} deducted';
+          if (walletBal != null) {
+            successMsg += ' \u2022 Balance: \u20b9${(walletBal as num).toStringAsFixed(0)}';
+          }
+        }
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(successMsg),
+          backgroundColor: const Color(0xFF166534),
+        ));
       }
 
-      final respData = jsonDecode(response.body);
       final bookingId = respData['id'] as int?;
       final orderID = respData['order_id']?.toString() ?? '';
 
@@ -811,8 +840,8 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
                   ),
                   child: CalendarDatePicker(
                     initialDate: tomorrow,
-                    firstDate: today.subtract(const Duration(days: 365)),
-                    lastDate: today.add(const Duration(days: 365)),
+                    firstDate: today,
+                    lastDate: today.add(Duration(days: _advanceBookingDays)),
                     onDateChanged: (date) {
                       Navigator.pop(context);
                       setState(() {
@@ -1286,6 +1315,56 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
                 style: TextStyle(color: Colors.red, fontSize: 13),
               ),
             ],
+          ],
+
+          // Total cost summary for selected items
+          if (isActive || isBooked) ...[
+            Builder(
+              builder: (context) {
+                final selected = _selectedItems[index] ?? {};
+                double total = 0;
+                for (int j = 0; j < items.length; j++) {
+                  if (selected.contains(j)) {
+                    final itemId = items[j]['id'] as int;
+                    final qty = (_itemQuantities[index]?[itemId]) ?? 1;
+                    total += (items[j]['price'] as double? ?? 0) * qty;
+                  }
+                }
+                if (total > 0) {
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF0FDF4),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFFBBF7D0)),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Total Cost',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF166534),
+                          ),
+                        ),
+                        Text(
+                          '\u20b9${total.toStringAsFixed(0)}',
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                            color: Color(0xFF166534),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+                return const SizedBox.shrink();
+              },
+            ),
           ],
 
           const SizedBox(height: 16),
@@ -2106,14 +2185,35 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
                     ],
                   ),
                   const SizedBox(height: 4),
-                  Text(
-                    item['desc'] as String,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: disabled
-                          ? AppColors.textDisabled
-                          : AppColors.textMuted,
-                    ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          item['desc'] as String,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: disabled
+                                ? AppColors.textDisabled
+                                : AppColors.textMuted,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        (item['price'] as double? ?? 0) > 0
+                            ? '\u20b9${(item['price'] as double).toStringAsFixed(0)}'
+                            : 'Included',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: disabled
+                              ? AppColors.textDisabled
+                              : (item['price'] as double? ?? 0) > 0
+                                  ? AppColors.primary
+                                  : const Color(0xFF16A34A),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -2124,8 +2224,64 @@ class _MealBookingScreenState extends State<MealBookingScreen> {
                   ? _buildRadioIndicator(isSelected, disabled)
                   : _buildCheckboxIndicator(isSelected, disabled),
             ],
+            // Quantity stepper (shown when selected and not disabled)
+            if (isSelected && !disabled) ...[
+              const SizedBox(width: 8),
+              _buildQtyStepper(mealIndex, item['id'] as int),
+            ],
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildQtyStepper(int mealIndex, int itemId) {
+    final qty = (_itemQuantities[mealIndex]?[itemId]) ?? 1;
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFFF5F3FF),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFDDD6FE)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            onTap: () {
+              if (qty > 1) {
+                setState(() {
+                  _itemQuantities.putIfAbsent(mealIndex, () => {});
+                  _itemQuantities[mealIndex]![itemId] = qty - 1;
+                });
+              }
+            },
+            child: Container(
+              padding: const EdgeInsets.all(4),
+              child: Icon(Icons.remove, size: 16, color: qty > 1 ? const Color(0xFF7C3AED) : const Color(0xFFD6D3CE)),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: Text(
+              '$qty',
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: Color(0xFF7C3AED)),
+            ),
+          ),
+          InkWell(
+            onTap: () {
+              if (qty < 10) {
+                setState(() {
+                  _itemQuantities.putIfAbsent(mealIndex, () => {});
+                  _itemQuantities[mealIndex]![itemId] = qty + 1;
+                });
+              }
+            },
+            child: Container(
+              padding: const EdgeInsets.all(4),
+              child: Icon(Icons.add, size: 16, color: qty < 10 ? const Color(0xFF7C3AED) : const Color(0xFFD6D3CE)),
+            ),
+          ),
+        ],
       ),
     );
   }
